@@ -6,6 +6,7 @@
 
 #include <string.h>
 #include <sys/types.h>
+#include <stdio.h>
 
 #include <algorithm>
 #include <iterator>
@@ -1358,6 +1359,7 @@ bool QuicConnection::ShouldGeneratePacket(
 }
 
 bool QuicConnection::CanWrite(HasRetransmittableData retransmittable) {
+  return true;
   if (!connected_) {
     return false;
   }
@@ -1377,6 +1379,7 @@ bool QuicConnection::CanWrite(HasRetransmittableData retransmittable) {
 
   // If the scheduler requires a delay, then we can not send this packet now.
   if (!delay.IsZero()) {
+    printf("delay: %lu\n", delay.ToMilliseconds());
     send_alarm_->Update(now.Add(delay), QuicTime::Delta::FromMilliseconds(1));
     DVLOG(1) << ENDPOINT << "Delaying sending " << delay.ToMilliseconds()
              << "ms";

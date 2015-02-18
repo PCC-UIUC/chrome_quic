@@ -6,6 +6,7 @@ namespace net {
 
 PCCSender::PCCSender()
 	: ideal_next_packet_send_time_(QuicTime::Zero()),
+	  last_sent_time(QuicTime::Zero()),
 		was_last_send_delayed_(false){
 		printf("pcc\n");
 }
@@ -40,7 +41,9 @@ bool PCCSender::OnPacketSent(
   printf("bytes in flight: %lu\n", bytes_in_flight);
   printf("sequence number: %lu\n", sequence_number);
   printf("bytes: %lu\n", bytes);
-  QuicTime::Delta delay = QuicTime::Delta::FromMilliseconds(10);
+  printf("send gap: %lu\n", sent_time.Subtract(last_sent_time).ToMicroseconds());
+  last_sent_time = sent_time;
+  QuicTime::Delta delay = QuicTime::Delta::FromMilliseconds(1000);
   if(was_last_send_delayed_){
   	was_last_send_delayed_ = false;
   	ideal_next_packet_send_time_ = ideal_next_packet_send_time_.Add(delay);
@@ -85,6 +88,7 @@ QuicTime::Delta PCCSender::TimeUntilSend(
       QuicTime now,
       QuicByteCount bytes_in_flight,
       HasRetransmittableData has_retransmittable_data) const {
+  return QuicTime::Delta::Zero();
   //printf("pcc pacing\n");
   if (ideal_next_packet_send_time_ > now.Add(alarm_granularity_)) {
     //DVLOG(1) << "Delaying packet: "
@@ -132,4 +136,5 @@ CongestionControlType PCCSender::GetCongestionControlType() const {
 }
 
 }  // namespace net
+
 

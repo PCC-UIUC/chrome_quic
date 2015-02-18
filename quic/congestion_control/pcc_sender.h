@@ -59,6 +59,7 @@ class NET_EXPORT_PRIVATE PCCSender : public SendAlgorithmInterface {
  private:
  	const QuicTime::Delta alarm_granularity_ = QuicTime::Delta::FromMilliseconds(1);
  	QuicTime ideal_next_packet_send_time_;
+ 	QuicTime last_sent_time;
  	mutable bool was_last_send_delayed_;
   DISALLOW_COPY_AND_ASSIGN(PCCSender);
 };
@@ -66,4 +67,5 @@ class NET_EXPORT_PRIVATE PCCSender : public SendAlgorithmInterface {
 }  // namespace net
 
 #endif
+
 

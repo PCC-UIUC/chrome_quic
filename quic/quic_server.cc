@@ -5,6 +5,7 @@
 #include "net/quic/quic_server.h"
 
 #include <string.h>
+#include <stdio.h>
 
 #include "net/base/ip_endpoint.h"
 #include "net/base/net_errors.h"
@@ -50,11 +51,16 @@ void QuicServer::Initialize() {
 #if MMSG_MORE
   use_recvmmsg_ = true;
 #endif
-
+	//printf("server test started\n");
   // If an initial flow control window has not explicitly been set, then use a
   // sensible value for a server: 1 MB for session, 64 KB for each stream.
   const uint32 kInitialSessionFlowControlWindow = 1 * 1024 * 1024;  // 1 MB
   const uint32 kInitialStreamFlowControlWindow = 64 * 1024;         // 64 KB
+  
+	QuicTagVector copt;
+	copt.push_back(kPCC);
+	config_.SetConnectionOptionsToSend(copt);
+	printf("Options setted.\n");
   if (config_.GetInitialStreamFlowControlWindowToSend() ==
       kMinimumFlowControlSendWindow) {
     config_.SetInitialStreamFlowControlWindowToSend(
@@ -81,8 +87,9 @@ QuicServer::~QuicServer() {
 int QuicServer::Listen(const IPEndPoint& address) {
   scoped_ptr<UDPServerSocket> socket(
       new UDPServerSocket(&net_log_, NetLog::Source()));
-
+	//printf("listening\n");
   socket->AllowAddressReuse();
+  //socket->AllowBroadcast();
 
   int rc = socket->Listen(address);
   if (rc < 0) {
@@ -135,6 +142,7 @@ int QuicServer::Listen(const IPEndPoint& address) {
 void QuicServer::Shutdown() {
   // Before we shut down the epoll server, give all active sessions a chance to
   // notify clients that they're closing.
+
   dispatcher_->Shutdown();
 
   socket_->Close();

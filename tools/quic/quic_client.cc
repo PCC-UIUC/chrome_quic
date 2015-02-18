@@ -10,6 +10,7 @@
 #include <sys/epoll.h>
 #include <sys/socket.h>
 #include <unistd.h>
+#include <stdio.h>
 
 #include "base/logging.h"
 #include "net/quic/congestion_control/tcp_receiver.h"
@@ -23,6 +24,7 @@
 #include "net/tools/quic/quic_epoll_connection_helper.h"
 #include "net/tools/quic/quic_socket_utils.h"
 #include "net/tools/quic/quic_spdy_client_stream.h"
+#include "net/quic/crypto/crypto_protocol.h"
 
 #ifndef SO_RXQ_OVFL
 #define SO_RXQ_OVFL 40
@@ -83,8 +85,8 @@ QuicClient::~QuicClient() {
 }
 
 bool QuicClient::Initialize() {
+	printf("Initialize\n");
   DCHECK(!initialized_);
-
   // If an initial flow control window has not explicitly been set, then use the
   // same value that Chrome uses: 10 Mb.
   const uint32 kInitialFlowControlWindow = 10 * 1024 * 1024;  // 10 Mb
@@ -197,11 +199,14 @@ bool QuicClient::Connect() {
 void QuicClient::StartConnect() {
   DCHECK(initialized_);
   DCHECK(!connected());
-
+  
   QuicPacketWriter* writer = CreateQuicPacketWriter();
 
   DummyPacketWriterFactory factory(writer);
-
+	QuicTagVector copt;
+	copt.push_back(kPCC);
+	config_.SetConnectionOptionsToSend(copt);
+	printf("Options setted.\n");
   session_.reset(new QuicClientSession(
       config_,
       new QuicConnection(GenerateConnectionId(),
@@ -218,6 +223,7 @@ void QuicClient::StartConnect() {
   if (writer_.get() != writer) {
     writer_.reset(writer);
   }
+  
   session_->InitializeSession(server_id_, &crypto_config_);
   session_->CryptoConnect();
 }

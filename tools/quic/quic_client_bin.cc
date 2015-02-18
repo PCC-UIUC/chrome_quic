@@ -79,7 +79,7 @@ string FLAGS_body = "";
 // A semicolon separated list of key:value pairs to add to request headers.
 string FLAGS_headers = "";
 // Set to true for a quieter output experience.
-bool FLAGS_quiet = false;
+bool FLAGS_quiet = true;
 // QUIC version to speak, e.g. 21. If not set, then all available versions are
 // offered in the handshake.
 int32 FLAGS_quic_version = -1;
