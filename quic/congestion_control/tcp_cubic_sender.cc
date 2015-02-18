@@ -5,6 +5,7 @@
 #include "net/quic/congestion_control/tcp_cubic_sender.h"
 
 #include <algorithm>
+#include <stdio.h>
 
 #include "base/metrics/histogram.h"
 #include "net/quic/congestion_control/prr_sender.h"
@@ -49,7 +50,7 @@ TcpCubicSender::TcpCubicSender(const QuicClock* clock,
       previous_slowstart_threshold_(0),
       last_cutback_exited_slowstart_(false),
       max_tcp_congestion_window_(max_tcp_congestion_window),
-      clock_(clock) {}
+      clock_(clock) {printf("realtcp\n");}
 
 TcpCubicSender::~TcpCubicSender() {
   UMA_HISTOGRAM_COUNTS("Net.QuicSession.FinalTcpCwnd", congestion_window_);

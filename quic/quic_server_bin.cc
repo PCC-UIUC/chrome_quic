@@ -6,6 +6,7 @@
 // (default 6121) until it's killed or ctrl-cd to death.
 
 #include <iostream>
+#include <stdio.h>
 
 #include "base/at_exit.h"
 #include "base/basictypes.h"
@@ -17,6 +18,8 @@
 #include "net/quic/quic_in_memory_cache.h"
 #include "net/quic/quic_protocol.h"
 #include "net/quic/quic_server.h"
+#include "base/strings/string16.h"
+#include "base/strings/utf_offset_string_conversions.h"
 
 // The port the quic server will listen on.
 int32 FLAGS_port = 6121;
@@ -62,7 +65,9 @@ int main(int argc, char *argv[]) {
 
   net::QuicConfig config;
   net::QuicServer server(config, net::QuicSupportedVersions());
-
+  //printf("Address: %s\n", net::IPAddressToString(ip).c_str());
+  //printf("%s\n", net::GetHostName().c_str());
+  //printf("Port: %d\n", FLAGS_port);
   int rc = server.Listen(net::IPEndPoint(ip, FLAGS_port));
   if (rc < 0) {
     return 1;

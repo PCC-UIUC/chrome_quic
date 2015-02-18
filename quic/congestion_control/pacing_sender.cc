@@ -4,6 +4,7 @@
 
 #include "net/quic/congestion_control/pacing_sender.h"
 
+
 namespace net {
 
 PacingSender::PacingSender(SendAlgorithmInterface* sender,
@@ -109,7 +110,7 @@ QuicTime::Delta PacingSender::TimeUntilSend(
       QuicTime now,
       QuicByteCount bytes_in_flight,
       HasRetransmittableData has_retransmittable_data) const {
-  QuicTime::Delta time_until_send =
+  QuicTime::Delta time_until_send = 
       sender_->TimeUntilSend(now, bytes_in_flight, has_retransmittable_data);
   if (burst_tokens_ > 0 || bytes_in_flight == 0) {
     // Don't pace if we have burst tokens available or leaving quiescence.

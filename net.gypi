@@ -771,6 +771,8 @@
       'quic/congestion_control/loss_detection_interface.h',
       'quic/congestion_control/pacing_sender.cc',
       'quic/congestion_control/pacing_sender.h',
+      'quic/congestion_control/pcc_sender.cc',
+      'quic/congestion_control/pcc_sender.h',
       'quic/congestion_control/prr_sender.cc',
       'quic/congestion_control/prr_sender.h',
       'quic/congestion_control/receive_algorithm_interface.cc',
