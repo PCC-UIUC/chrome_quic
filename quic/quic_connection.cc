@@ -1359,6 +1359,7 @@ bool QuicConnection::ShouldGeneratePacket(
 }
 
 bool QuicConnection::CanWrite(HasRetransmittableData retransmittable) {
+  return true;
   if (!connected_) {
     return false;
   }
