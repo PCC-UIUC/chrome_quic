@@ -5,9 +5,9 @@
 namespace net {
 
 PCCSender::PCCSender()
-	: ideal_next_packet_send_time_(QuicTime::Zero()),
-	  last_sent_time(QuicTime::Zero()),
-		was_last_send_delayed_(false){
+	: current_monitor(-1),
+    previous_monitor(-1),
+    monitor_left(0){
 		printf("pcc\n");
 }
 
@@ -19,7 +19,7 @@ void PCCSender::SetFromConfig(const QuicConfig& config,
 }
 
 bool PCCSender::ResumeConnectionState(
-    const CachedNetworkParameters& cached_network_params) {
+  const CachedNetworkParameters& cached_network_params) {
   return true;
 }
 
