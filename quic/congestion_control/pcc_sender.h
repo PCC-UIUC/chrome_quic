@@ -5,7 +5,6 @@
 #include "base/compiler_specific.h"
 #include "net/base/net_export.h"
 #include "net/quic/congestion_control/send_algorithm_interface.h"
-#include "net/quic/crypto/cached_network_parameters.h"
 #include "net/quic/quic_bandwidth.h"
 #include "net/quic/quic_connection_stats.h"
 #include "net/quic/quic_protocol.h"
@@ -22,11 +21,12 @@ class NET_EXPORT_PRIVATE PCCSender : public SendAlgorithmInterface {
 
   // SendAlgorithmInterface methods.
   void SetFromConfig(const QuicConfig& config,
-                     bool is_server,
-                     bool using_pacing) override;
+                     Perspective perspective) override;
   bool ResumeConnectionState(
-      const CachedNetworkParameters& cached_network_params) override;
+      const CachedNetworkParameters& cached_network_params,
+      bool max_bandwidth_resumption) override;
   void SetNumEmulatedConnections(int num_connections) override;
+  void SetMaxCongestionWindow(QuicByteCount max_congestion_window) override;
   void OnCongestionEvent(bool rtt_updated,
                          QuicByteCount bytes_in_flight,
                          const CongestionVector& acked_packets,
@@ -37,7 +37,6 @@ class NET_EXPORT_PRIVATE PCCSender : public SendAlgorithmInterface {
                     QuicByteCount bytes,
                     HasRetransmittableData is_retransmittable) override;
   void OnRetransmissionTimeout(bool packets_retransmitted) override;
-  void RevertRetransmissionTimeout() override;
   QuicTime::Delta TimeUntilSend(
       QuicTime now,
       QuicByteCount bytes_in_flight,

@@ -11,17 +11,21 @@ PCCSender::PCCSender(){
 PCCSender::~PCCSender() {}
 
 void PCCSender::SetFromConfig(const QuicConfig& config,
-                                 bool is_server,
-                                 bool using_pacing) {
+                                 Perspective perspective) {
 }
 
 bool PCCSender::ResumeConnectionState(
-    const CachedNetworkParameters& cached_network_params) {
+    const CachedNetworkParameters& cached_network_params,
+    bool max_bandwidth_resumption) {
   return true;
 }
 
 void PCCSender::SetNumEmulatedConnections(int num_connections) {
   
+}
+
+void PCCSender::SetMaxCongestionWindow(
+    QuicByteCount max_congestion_window) {
 }
 
 bool PCCSender::OnPacketSent(
@@ -66,10 +70,6 @@ void PCCSender::OnCongestionEvent(
 }
 
 void PCCSender::OnRetransmissionTimeout(bool packets_retransmitted) {
-
-}
-
-void PCCSender::RevertRetransmissionTimeout() {
 
 }
 
