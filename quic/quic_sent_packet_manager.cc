@@ -147,19 +147,6 @@ void QuicSentPacketManager::SetFromConfig(const QuicConfig& config) {
   }
   // EnablePacing();
 
-  if (config.HasReceivedConnectionOptions() &&
-      ContainsQuicTag(config.ReceivedConnectionOptions(), kPCC)) {
-    printf("kpcc receive\n");
-    send_algorithm_.reset(SendAlgorithmInterface::Create(
-        clock_, &rtt_stats_, kPcc, stats_, initial_congestion_window_));
-  }
-  
-  if (HasClientSentConnectionOption(config, kPCC)) {
-    printf("kpcc send\n");
-    send_algorithm_.reset(SendAlgorithmInterface::Create(
-        clock_, &rtt_stats_, kPcc, stats_, initial_congestion_window_));
-  }
-
   if (HasClientSentConnectionOption(config, k1CON)) {
     send_algorithm_->SetNumEmulatedConnections(1);
   }

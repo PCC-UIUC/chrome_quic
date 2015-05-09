@@ -80,11 +80,6 @@ void QuicSimpleServer::Initialize() {
   use_recvmmsg_ = true;
 #endif
 
-  QuicTagVector copt;
-  copt.push_back(kPCC);
-  config_.SetConnectionOptionsToSend(copt);
-  printf("Options setted.\n");
-
   // If an initial flow control window has not explicitly been set, then use a
   // sensible value for a server: 1 MB for session, 64 KB for each stream.
   const uint32 kInitialSessionFlowControlWindow = 1 * 1024 * 1024;  // 1 MB
