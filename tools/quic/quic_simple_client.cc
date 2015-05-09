@@ -61,6 +61,11 @@ QuicSimpleClient::~QuicSimpleClient() {
 bool QuicSimpleClient::Initialize() {
   DCHECK(!initialized_);
 
+  QuicTagVector copt;
+  copt.push_back(kPCC);
+  config_.SetConnectionOptionsToSend(copt);
+  printf("Options setted.\n");
+
   if (!CreateUDPSocket()) {
     return false;
   }

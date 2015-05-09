@@ -6,6 +6,7 @@
 
 #include <string.h>
 #include <sys/types.h>
+#include <stdio.h>
 
 #include <algorithm>
 #include <iterator>

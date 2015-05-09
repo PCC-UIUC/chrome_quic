@@ -6,6 +6,7 @@
 
 #include "net/quic/congestion_control/tcp_cubic_bytes_sender.h"
 #include "net/quic/congestion_control/tcp_cubic_sender.h"
+#include "net/quic/congestion_control/pcc_sender.h"
 #include "net/quic/quic_flags.h"
 #include "net/quic/quic_protocol.h"
 
@@ -50,6 +51,8 @@ SendAlgorithmInterface* SendAlgorithmInterface::Create(
 #endif
       LOG(DFATAL) << "BbrTcpSender is not supported.";
       return nullptr;
+    case kPcc:
+      return new PCCSender();
   }
   return nullptr;
 }
