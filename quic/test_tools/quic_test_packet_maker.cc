@@ -82,9 +82,10 @@ scoped_ptr<QuicEncryptedPacket> QuicTestPacketMaker::MakeAckAndRstPacket(
   QuicRstStreamFrame rst(stream_id, error_code, 0);
   frames.push_back(QuicFrame(&rst));
 
-  QuicFramer framer(SupportedVersions(version_), clock_->Now(), false);
+  QuicFramer framer(SupportedVersions(version_), clock_->Now(),
+                    Perspective::IS_CLIENT);
   scoped_ptr<QuicPacket> packet(
-      BuildUnsizedDataPacket(&framer, header, frames).packet);
+      BuildUnsizedDataPacket(&framer, header, frames));
   return scoped_ptr<QuicEncryptedPacket>(framer.EncryptPacket(
       ENCRYPTION_NONE, header.packet_sequence_number, *packet));
 }
@@ -128,7 +129,8 @@ scoped_ptr<QuicEncryptedPacket> QuicTestPacketMaker::MakeAckPacket(
     ack.received_packet_times.push_back(make_pair(i, clock_->Now()));
   }
 
-  QuicFramer framer(SupportedVersions(version_), clock_->Now(), false);
+  QuicFramer framer(SupportedVersions(version_), clock_->Now(),
+                    Perspective::IS_CLIENT);
   QuicFrames frames;
   frames.push_back(QuicFrame(&ack));
 
@@ -137,7 +139,7 @@ scoped_ptr<QuicEncryptedPacket> QuicTestPacketMaker::MakeAckPacket(
   frames.push_back(QuicFrame(&stop_waiting));
 
   scoped_ptr<QuicPacket> packet(
-      BuildUnsizedDataPacket(&framer, header, frames).packet);
+      BuildUnsizedDataPacket(&framer, header, frames));
   return scoped_ptr<QuicEncryptedPacket>(framer.EncryptPacket(
       ENCRYPTION_NONE, header.packet_sequence_number, *packet));
 }
@@ -215,10 +217,16 @@ SpdyHeaderBlock QuicTestPacketMaker::GetRequestHeaders(
     const std::string& path) {
   SpdyHeaderBlock headers;
   headers[":method"] = method;
-  headers[":host"] = "www.google.com";
+  if (version_ <= QUIC_VERSION_24) {
+    headers[":host"] = "www.google.com";
+  } else {
+    headers[":authority"] = "www.google.com";
+  }
   headers[":path"] = path;
   headers[":scheme"] = scheme;
-  headers[":version"] = "HTTP/1.1";
+  if (version_ <= QUIC_VERSION_24) {
+    headers[":version"] = "HTTP/1.1";
+  }
   return headers;
 }
 
@@ -226,7 +234,9 @@ SpdyHeaderBlock QuicTestPacketMaker::GetResponseHeaders(
     const std::string& status) {
   SpdyHeaderBlock headers;
   headers[":status"] = status;
-  headers[":version"] = "HTTP/1.1";
+  if (version_ <= QUIC_VERSION_24) {
+    headers[":version"] = "HTTP/1.1";
+  }
   headers["content-type"] = "text/plain";
   return headers;
 }
@@ -234,11 +244,12 @@ SpdyHeaderBlock QuicTestPacketMaker::GetResponseHeaders(
 scoped_ptr<QuicEncryptedPacket> QuicTestPacketMaker::MakePacket(
     const QuicPacketHeader& header,
     const QuicFrame& frame) {
-  QuicFramer framer(SupportedVersions(version_), QuicTime::Zero(), false);
+  QuicFramer framer(SupportedVersions(version_), QuicTime::Zero(),
+                    Perspective::IS_CLIENT);
   QuicFrames frames;
   frames.push_back(frame);
   scoped_ptr<QuicPacket> packet(
-      BuildUnsizedDataPacket(&framer, header, frames).packet);
+      BuildUnsizedDataPacket(&framer, header, frames));
   return scoped_ptr<QuicEncryptedPacket>(framer.EncryptPacket(
       ENCRYPTION_NONE, header.packet_sequence_number, *packet));
 }

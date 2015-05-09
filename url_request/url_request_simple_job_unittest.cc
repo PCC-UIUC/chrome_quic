@@ -68,12 +68,12 @@ class MockSimpleJob : public URLRequestSimpleJob {
   DISALLOW_COPY_AND_ASSIGN(MockSimpleJob);
 };
 
-class CancelURLRequestDelegate : public net::URLRequest::Delegate {
+class CancelURLRequestDelegate : public URLRequest::Delegate {
  public:
   explicit CancelURLRequestDelegate()
       : buf_(new IOBuffer(kBufferSize)), run_loop_(new base::RunLoop) {}
 
-  void OnResponseStarted(net::URLRequest* request) override {
+  void OnResponseStarted(URLRequest* request) override {
     int bytes_read = 0;
     EXPECT_FALSE(request->Read(buf_.get(), kBufferSize, &bytes_read));
     EXPECT_TRUE(request->status().is_io_pending());
@@ -125,8 +125,8 @@ class URLRequestSimpleJobTest : public ::testing::Test {
     context_.set_job_factory(&job_factory_);
     context_.Init();
 
-    request_ = context_.CreateRequest(
-        GURL("data:test"), DEFAULT_PRIORITY, &delegate_, NULL);
+    request_ =
+        context_.CreateRequest(GURL("data:test"), DEFAULT_PRIORITY, &delegate_);
   }
 
   ~URLRequestSimpleJobTest() override { worker_pool_->Shutdown(); }
@@ -204,8 +204,8 @@ TEST_F(URLRequestSimpleJobTest, InvalidRangeRequest) {
 }
 
 TEST_F(URLRequestSimpleJobTest, EmptyDataRequest) {
-  request_ = context_.CreateRequest(GURL("data:empty"), DEFAULT_PRIORITY,
-                                    &delegate_, NULL);
+  request_ =
+      context_.CreateRequest(GURL("data:empty"), DEFAULT_PRIORITY, &delegate_);
   StartRequest(nullptr);
   ASSERT_TRUE(request_->status().is_success());
   EXPECT_EQ("", delegate_.data_received());
@@ -215,7 +215,7 @@ TEST_F(URLRequestSimpleJobTest, CancelAfterFirstRead) {
   scoped_ptr<CancelURLRequestDelegate> cancel_delegate(
       new CancelURLRequestDelegate());
   request_ = context_.CreateRequest(GURL("data:cancel"), DEFAULT_PRIORITY,
-                                    cancel_delegate.get(), NULL);
+                                    cancel_delegate.get());
   request_->Start();
   cancel_delegate->WaitUntilHeadersReceived();
 

@@ -92,6 +92,10 @@ class QuicHeadersStream::SpdyFramerVisitor
     CloseConnection("SPDY DATA frame received.");
   }
 
+  void OnStreamPadding(SpdyStreamId stream_id, size_t len) override {
+    CloseConnection("SPDY frame padding received.");
+  }
+
   void OnError(SpdyFramer* framer) override {
     CloseConnection(base::StringPrintf(
         "SPDY framing error: %s",
@@ -207,7 +211,7 @@ QuicHeadersStream::QuicHeadersStream(QuicSession* session)
       stream_id_(kInvalidStreamId),
       fin_(false),
       frame_len_(0) {
-  InitializeFramer(session->connection()->version());
+  InitializeFramer(version());
   // The headers stream is exempt from connection level flow control.
   DisableConnectionFlowControlForThisStream();
 }
@@ -222,7 +226,7 @@ size_t QuicHeadersStream::WriteHeaders(
     QuicAckNotifier::DelegateInterface* ack_notifier_delegate) {
   scoped_ptr<SpdySerializedFrame> frame;
   if (spdy_framer_->protocol_version() == SPDY3) {
-    if (session()->is_server()) {
+    if (session()->perspective() == Perspective::IS_SERVER) {
       SpdySynReplyIR syn_reply(stream_id);
       syn_reply.set_name_value_block(headers);
       syn_reply.set_fin(fin);
@@ -238,7 +242,7 @@ size_t QuicHeadersStream::WriteHeaders(
     SpdyHeadersIR headers_frame(stream_id);
     headers_frame.set_name_value_block(headers);
     headers_frame.set_fin(fin);
-    if (!session()->is_server()) {
+    if (session()->perspective() == Perspective::IS_CLIENT) {
       headers_frame.set_has_priority(true);
       headers_frame.set_priority(priority);
     }
@@ -275,7 +279,7 @@ void QuicHeadersStream::InitializeFramer(QuicVersion version) {
 void QuicHeadersStream::OnSynStream(SpdyStreamId stream_id,
                                     SpdyPriority priority,
                                     bool fin) {
-  if (!session()->is_server()) {
+  if (session()->perspective() == Perspective::IS_CLIENT) {
     CloseConnectionWithDetails(
         QUIC_INVALID_HEADERS_STREAM_DATA,
         "SPDY SYN_STREAM frame received at the client");
@@ -288,7 +292,7 @@ void QuicHeadersStream::OnSynStream(SpdyStreamId stream_id,
 }
 
 void QuicHeadersStream::OnSynReply(SpdyStreamId stream_id, bool fin) {
-  if (session()->is_server()) {
+  if (session()->perspective() == Perspective::IS_SERVER) {
     CloseConnectionWithDetails(
         QUIC_INVALID_HEADERS_STREAM_DATA,
         "SPDY SYN_REPLY frame received at the server");

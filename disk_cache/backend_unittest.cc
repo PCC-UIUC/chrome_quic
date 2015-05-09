@@ -9,6 +9,7 @@
 #include "base/run_loop.h"
 #include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
+#include "base/test/mock_entropy_provider.h"
 #include "base/third_party/dynamic_annotations/dynamic_annotations.h"
 #include "base/thread_task_runner_handle.h"
 #include "base/threading/platform_thread.h"
@@ -127,6 +128,7 @@ class DiskCacheBackendTest : public DiskCacheTestWithCache {
   void BackendDisable2();
   void BackendDisable3();
   void BackendDisable4();
+  void BackendDisabledAPI();
 };
 
 int DiskCacheBackendTest::GeneratePendingIO(net::TestCompletionCallback* cb) {
@@ -1839,16 +1841,6 @@ TEST_F(DiskCacheTest, WrongVersion) {
   ASSERT_EQ(net::ERR_FAILED, cb.GetResult(rv));
 }
 
-class BadEntropyProvider : public base::FieldTrial::EntropyProvider {
- public:
-  ~BadEntropyProvider() override {}
-
-  double GetEntropyForTrial(const std::string& trial_name,
-                            uint32 randomization_seed) const override {
-    return 0.5;
-  }
-};
-
 // Tests that the disk cache successfully joins the control group, dropping the
 // existing cache in favour of a new empty cache.
 // Disabled on android since this test requires cache creator to create
@@ -1866,7 +1858,7 @@ TEST_F(DiskCacheTest, SimpleCacheControlJoin) {
 
   // Instantiate the SimpleCacheTrial, forcing this run into the
   // ExperimentControl group.
-  base::FieldTrialList field_trial_list(new BadEntropyProvider());
+  base::FieldTrialList field_trial_list(new base::MockEntropyProvider());
   base::FieldTrialList::CreateFieldTrial("SimpleCacheTrial",
                                          "ExperimentControl");
   net::TestCompletionCallback cb;
@@ -1890,7 +1882,7 @@ TEST_F(DiskCacheTest, SimpleCacheControlJoin) {
 TEST_F(DiskCacheTest, SimpleCacheControlRestart) {
   // Instantiate the SimpleCacheTrial, forcing this run into the
   // ExperimentControl group.
-  base::FieldTrialList field_trial_list(new BadEntropyProvider());
+  base::FieldTrialList field_trial_list(new base::MockEntropyProvider());
   base::FieldTrialList::CreateFieldTrial("SimpleCacheTrial",
                                          "ExperimentControl");
 
@@ -1930,7 +1922,7 @@ TEST_F(DiskCacheTest, SimpleCacheControlLeave) {
   {
     // Instantiate the SimpleCacheTrial, forcing this run into the
     // ExperimentControl group.
-    base::FieldTrialList field_trial_list(new BadEntropyProvider());
+    base::FieldTrialList field_trial_list(new base::MockEntropyProvider());
     base::FieldTrialList::CreateFieldTrial("SimpleCacheTrial",
                                            "ExperimentControl");
 
@@ -1941,7 +1933,7 @@ TEST_F(DiskCacheTest, SimpleCacheControlLeave) {
 
   // Instantiate the SimpleCacheTrial, forcing this run into the
   // ExperimentNo group.
-  base::FieldTrialList field_trial_list(new BadEntropyProvider());
+  base::FieldTrialList field_trial_list(new base::MockEntropyProvider());
   base::FieldTrialList::CreateFieldTrial("SimpleCacheTrial", "ExperimentNo");
   net::TestCompletionCallback cb;
 
@@ -2732,6 +2724,51 @@ TEST_F(DiskCacheBackendTest, NewEvictionDisableSuccess4) {
   SetNewEviction();
   InitCache();
   BackendDisable4();
+}
+
+// Tests the exposed API with a disabled cache.
+void DiskCacheBackendTest::BackendDisabledAPI() {
+  cache_impl_->SetUnitTestMode();  // Simulate failure restarting the cache.
+
+  disk_cache::Entry* entry1, *entry2;
+  scoped_ptr<TestIterator> iter = CreateIterator();
+  EXPECT_EQ(2, cache_->GetEntryCount());
+  ASSERT_EQ(net::OK, iter->OpenNextEntry(&entry1));
+  entry1->Close();
+  EXPECT_NE(net::OK, iter->OpenNextEntry(&entry2));
+  FlushQueueForTest();
+  // The cache should be disabled.
+
+  EXPECT_EQ(net::DISK_CACHE, cache_->GetCacheType());
+  EXPECT_EQ(0, cache_->GetEntryCount());
+  EXPECT_NE(net::OK, OpenEntry("First", &entry2));
+  EXPECT_NE(net::OK, CreateEntry("Something new", &entry2));
+  EXPECT_NE(net::OK, DoomEntry("First"));
+  EXPECT_NE(net::OK, DoomAllEntries());
+  EXPECT_NE(net::OK, DoomEntriesBetween(Time(), Time::Now()));
+  EXPECT_NE(net::OK, DoomEntriesSince(Time()));
+  iter = CreateIterator();
+  EXPECT_NE(net::OK, iter->OpenNextEntry(&entry2));
+
+  std::vector<std::pair<std::string, std::string>> stats;
+  cache_->GetStats(&stats);
+  EXPECT_TRUE(stats.empty());
+  cache_->OnExternalCacheHit("First");
+}
+
+TEST_F(DiskCacheBackendTest, DisabledAPI) {
+  ASSERT_TRUE(CopyTestCache("bad_rankings2"));
+  DisableFirstCleanup();
+  InitCache();
+  BackendDisabledAPI();
+}
+
+TEST_F(DiskCacheBackendTest, NewEvictionDisabledAPI) {
+  ASSERT_TRUE(CopyTestCache("bad_rankings2"));
+  DisableFirstCleanup();
+  SetNewEviction();
+  InitCache();
+  BackendDisabledAPI();
 }
 
 TEST_F(DiskCacheTest, Backend_UsageStatsTimer) {

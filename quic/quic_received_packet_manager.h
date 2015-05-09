@@ -10,7 +10,6 @@
 
 #include <deque>
 
-#include "net/quic/congestion_control/receive_algorithm_interface.h"
 #include "net/quic/quic_config.h"
 #include "net/quic/quic_framer.h"
 #include "net/quic/quic_protocol.h"
@@ -66,7 +65,7 @@ class NET_EXPORT_PRIVATE QuicReceivedPacketManager :
 
     // A deque indexed by sequence number storing the packet's hash and whether
     // a hash was recorded for that sequence number.
-    typedef std::deque<std::pair<QuicPacketEntropyHash, bool> >
+    typedef std::deque<std::pair<QuicPacketEntropyHash, bool>>
         ReceivedEntropyHashes;
 
     // Recomputes first_gap_ and removes packets_entropy_ entries that are no
@@ -165,8 +164,6 @@ class NET_EXPORT_PRIVATE QuicReceivedPacketManager :
   // no sequence numbers have been received since UpdateReceivedPacketInfo.
   // Needed for calculating delta_time_largest_observed.
   QuicTime time_largest_observed_;
-
-  scoped_ptr<ReceiveAlgorithmInterface> receive_algorithm_;
 
   QuicConnectionStats* stats_;
 

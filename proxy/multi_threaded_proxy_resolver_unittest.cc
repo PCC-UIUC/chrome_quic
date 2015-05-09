@@ -12,10 +12,14 @@
 #include "base/synchronization/waitable_event.h"
 #include "base/threading/platform_thread.h"
 #include "net/base/net_errors.h"
-#include "net/base/net_log.h"
-#include "net/base/net_log_unittest.h"
 #include "net/base/test_completion_callback.h"
+#include "net/log/captured_net_log_entry.h"
+#include "net/log/net_log.h"
+#include "net/log/net_log_unittest.h"
+#include "net/log/test_net_log.h"
+#include "net/proxy/mock_proxy_resolver.h"
 #include "net/proxy/proxy_info.h"
+#include "net/proxy/proxy_resolver_factory.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "url/gurl.h"
 
@@ -148,69 +152,17 @@ class BlockableProxyResolver : public MockProxyResolver {
   base::WaitableEvent blocked_;
 };
 
-// ForwardingProxyResolver forwards all requests to |impl|.
-class ForwardingProxyResolver : public ProxyResolver {
- public:
-  explicit ForwardingProxyResolver(ProxyResolver* impl)
-      : ProxyResolver(impl->expects_pac_bytes()),
-        impl_(impl) {}
-
-  int GetProxyForURL(const GURL& query_url,
-                     ProxyInfo* results,
-                     const CompletionCallback& callback,
-                     RequestHandle* request,
-                     const BoundNetLog& net_log) override {
-    return impl_->GetProxyForURL(
-        query_url, results, callback, request, net_log);
-  }
-
-  void CancelRequest(RequestHandle request) override {
-    impl_->CancelRequest(request);
-  }
-
-  LoadState GetLoadState(RequestHandle request) const override {
-    NOTREACHED();
-    return LOAD_STATE_IDLE;
-  }
-
-  void CancelSetPacScript() override { impl_->CancelSetPacScript(); }
-
-  int SetPacScript(const scoped_refptr<ProxyResolverScriptData>& script_data,
-                   const CompletionCallback& callback) override {
-    return impl_->SetPacScript(script_data, callback);
-  }
-
- private:
-  ProxyResolver* impl_;
-};
-
-// This factory returns ProxyResolvers that forward all requests to
-// |resolver|.
-class ForwardingProxyResolverFactory : public ProxyResolverFactory {
- public:
-  explicit ForwardingProxyResolverFactory(ProxyResolver* resolver)
-      : ProxyResolverFactory(resolver->expects_pac_bytes()),
-        resolver_(resolver) {}
-
-  ProxyResolver* CreateProxyResolver() override {
-    return new ForwardingProxyResolver(resolver_);
-  }
-
- private:
-  ProxyResolver* resolver_;
-};
-
 // This factory returns new instances of BlockableProxyResolver.
-class BlockableProxyResolverFactory : public ProxyResolverFactory {
+class BlockableProxyResolverFactory : public LegacyProxyResolverFactory {
  public:
-  BlockableProxyResolverFactory() : ProxyResolverFactory(true) {}
+  BlockableProxyResolverFactory() : LegacyProxyResolverFactory(true) {}
 
   ~BlockableProxyResolverFactory() override { STLDeleteElements(&resolvers_); }
 
-  ProxyResolver* CreateProxyResolver() override {
+  scoped_ptr<ProxyResolver> CreateProxyResolver() override {
     BlockableProxyResolver* resolver = new BlockableProxyResolver;
     resolvers_.push_back(resolver);
-    return new ForwardingProxyResolver(resolver);
+    return make_scoped_ptr(new ForwardingProxyResolver(resolver));
   }
 
   std::vector<BlockableProxyResolver*> resolvers() {
@@ -244,7 +196,7 @@ TEST(MultiThreadedProxyResolverTest, SingleThread_Basic) {
 
   // Start request 0.
   TestCompletionCallback callback0;
-  CapturingBoundNetLog log0;
+  BoundTestNetLog log0;
   ProxyInfo results0;
   rv = resolver.GetProxyForURL(GURL("http://request0"), &results0,
                                callback0.callback(), NULL, log0.bound());
@@ -259,7 +211,7 @@ TEST(MultiThreadedProxyResolverTest, SingleThread_Basic) {
   // on completion, this should have been copied into |log0|.
   // We also have 1 log entry that was emitted by the
   // MultiThreadedProxyResolver.
-  CapturingNetLog::CapturedEntryList entries0;
+  CapturedNetLogEntry::List entries0;
   log0.GetEntries(&entries0);
 
   ASSERT_EQ(2u, entries0.size());
@@ -325,7 +277,7 @@ TEST(MultiThreadedProxyResolverTest,
   ProxyResolver::RequestHandle request0;
   TestCompletionCallback callback0;
   ProxyInfo results0;
-  CapturingBoundNetLog log0;
+  BoundTestNetLog log0;
   rv = resolver.GetProxyForURL(GURL("http://request0"), &results0,
                                callback0.callback(), &request0, log0.bound());
   EXPECT_EQ(ERR_IO_PENDING, rv);
@@ -334,7 +286,7 @@ TEST(MultiThreadedProxyResolverTest,
 
   TestCompletionCallback callback1;
   ProxyInfo results1;
-  CapturingBoundNetLog log1;
+  BoundTestNetLog log1;
   rv = resolver.GetProxyForURL(GURL("http://request1"), &results1,
                                callback1.callback(), NULL, log1.bound());
   EXPECT_EQ(ERR_IO_PENDING, rv);
@@ -342,7 +294,7 @@ TEST(MultiThreadedProxyResolverTest,
   ProxyResolver::RequestHandle request2;
   TestCompletionCallback callback2;
   ProxyInfo results2;
-  CapturingBoundNetLog log2;
+  BoundTestNetLog log2;
   rv = resolver.GetProxyForURL(GURL("http://request2"), &results2,
                                callback2.callback(), &request2, log2.bound());
   EXPECT_EQ(ERR_IO_PENDING, rv);
@@ -357,7 +309,7 @@ TEST(MultiThreadedProxyResolverTest,
   EXPECT_EQ(0, callback0.WaitForResult());
   EXPECT_EQ("PROXY request0:80", results0.ToPacString());
 
-  CapturingNetLog::CapturedEntryList entries0;
+  CapturedNetLogEntry::List entries0;
   log0.GetEntries(&entries0);
 
   ASSERT_EQ(2u, entries0.size());
@@ -368,7 +320,7 @@ TEST(MultiThreadedProxyResolverTest,
   EXPECT_EQ(1, callback1.WaitForResult());
   EXPECT_EQ("PROXY request1:80", results1.ToPacString());
 
-  CapturingNetLog::CapturedEntryList entries1;
+  CapturedNetLogEntry::List entries1;
   log1.GetEntries(&entries1);
 
   ASSERT_EQ(4u, entries1.size());
@@ -383,7 +335,7 @@ TEST(MultiThreadedProxyResolverTest,
   EXPECT_EQ(2, callback2.WaitForResult());
   EXPECT_EQ("PROXY request2:80", results2.ToPacString());
 
-  CapturingNetLog::CapturedEntryList entries2;
+  CapturedNetLogEntry::List entries2;
   log2.GetEntries(&entries2);
 
   ASSERT_EQ(4u, entries2.size());

@@ -13,7 +13,6 @@
 #include "net/base/upload_bytes_element_reader.h"
 #include "net/http/http_response_headers.h"
 #include "net/http/transport_security_state.h"
-#include "net/quic/congestion_control/receive_algorithm_interface.h"
 #include "net/quic/congestion_control/send_algorithm_interface.h"
 #include "net/quic/crypto/crypto_protocol.h"
 #include "net/quic/crypto/quic_decrypter.h"
@@ -65,25 +64,14 @@ class TestQuicConnection : public QuicConnection {
                        address,
                        helper,
                        writer_factory,
-                       true   /* owns_writer */,
-                       false  /* is_server */,
-                       false  /* is_secure */,
-                       versions) {
-  }
+                       true /* owns_writer */,
+                       Perspective::IS_CLIENT,
+                       false /* is_secure */,
+                       versions) {}
 
   void SetSendAlgorithm(SendAlgorithmInterface* send_algorithm) {
     QuicConnectionPeer::SetSendAlgorithm(this, send_algorithm);
   }
-
-  void SetReceiveAlgorithm(ReceiveAlgorithmInterface* receive_algorithm) {
-    QuicConnectionPeer::SetReceiveAlgorithm(this, receive_algorithm);
-  }
-};
-
-class TestReceiveAlgorithm : public ReceiveAlgorithmInterface {
- public:
-  MOCK_METHOD3(RecordIncomingPacket,
-               void(QuicByteCount, QuicPacketSequenceNumber, QuicTime));
 };
 
 // Subclass of QuicHttpStream that closes itself when the first piece of data
@@ -157,7 +145,7 @@ class QuicHttpStreamTest : public ::testing::TestWithParam<QuicVersion> {
   }
 
   ~QuicHttpStreamTest() {
-    session_->CloseSessionOnError(ERR_ABORTED);
+    session_->CloseSessionOnError(ERR_ABORTED, QUIC_INTERNAL_ERROR);
     for (size_t i = 0; i < writes_.size(); i++) {
       delete writes_[i].packet;
     }
@@ -198,9 +186,6 @@ class QuicHttpStreamTest : public ::testing::TestWithParam<QuicVersion> {
     socket->Connect(peer_addr_);
     runner_ = new TestTaskRunner(&clock_);
     send_algorithm_ = new MockSendAlgorithm();
-    receive_algorithm_ = new TestReceiveAlgorithm();
-    EXPECT_CALL(*receive_algorithm_, RecordIncomingPacket(_, _, _)).
-        Times(AnyNumber());
     EXPECT_CALL(*send_algorithm_,
                 OnPacketSent(_, _, _, _, _)).WillRepeatedly(Return(true));
     EXPECT_CALL(*send_algorithm_, RetransmissionDelay()).WillRepeatedly(
@@ -211,7 +196,7 @@ class QuicHttpStreamTest : public ::testing::TestWithParam<QuicVersion> {
         WillRepeatedly(Return(QuicTime::Delta::Zero()));
     EXPECT_CALL(*send_algorithm_, BandwidthEstimate()).WillRepeatedly(
         Return(QuicBandwidth::Zero()));
-    EXPECT_CALL(*send_algorithm_, SetFromConfig(_, _, _)).Times(AnyNumber());
+    EXPECT_CALL(*send_algorithm_, SetFromConfig(_, _)).Times(AnyNumber());
     helper_.reset(new QuicConnectionHelper(runner_.get(), &clock_,
                                            &random_generator_));
     TestPacketWriterFactory writer_factory(socket);
@@ -220,17 +205,11 @@ class QuicHttpStreamTest : public ::testing::TestWithParam<QuicVersion> {
                                          helper_.get(), writer_factory);
     connection_->set_visitor(&visitor_);
     connection_->SetSendAlgorithm(send_algorithm_);
-    connection_->SetReceiveAlgorithm(receive_algorithm_);
-    session_.reset(
-        new QuicClientSession(connection_,
-                              scoped_ptr<DatagramClientSocket>(socket),
-                              nullptr,
-                              &transport_security_state_,
-                              make_scoped_ptr((QuicServerInfo*)nullptr),
-                              DefaultQuicConfig(),
-                              base::MessageLoop::current()->
-                                  message_loop_proxy().get(),
-                              nullptr));
+    session_.reset(new QuicClientSession(
+        connection_, scoped_ptr<DatagramClientSocket>(socket), nullptr,
+        &transport_security_state_, make_scoped_ptr((QuicServerInfo*)nullptr),
+        DefaultQuicConfig(), "CONNECTION_UNKNOWN", base::TimeTicks::Now(),
+        base::MessageLoop::current()->message_loop_proxy().get(), nullptr));
     session_->InitializeSession(QuicServerId(kServerHostname, kServerPort,
                                              /*is_secure=*/false,
                                              PRIVACY_MODE_DISABLED),
@@ -307,7 +286,6 @@ class QuicHttpStreamTest : public ::testing::TestWithParam<QuicVersion> {
   BoundNetLog net_log_;
   bool use_closing_stream_;
   MockSendAlgorithm* send_algorithm_;
-  TestReceiveAlgorithm* receive_algorithm_;
   scoped_refptr<TestTaskRunner> runner_;
   scoped_ptr<MockWrite[]> mock_writes_;
   MockClock clock_;
@@ -422,7 +400,8 @@ TEST_P(QuicHttpStreamTest, GetRequestLargeResponse) {
   headers["content-type"] = "text/plain";
   headers["big6"] = std::string(10000, 'x');  // Lots of x's.
 
-  std::string response = SpdyUtils::SerializeUncompressedHeaders(headers);
+  std::string response =
+      SpdyUtils::SerializeUncompressedHeaders(headers, GetParam());
   EXPECT_LT(4096u, response.length());
   stream_->OnDataReceived(response.data(), response.length());
   stream_->OnClose(QUIC_NO_ERROR);

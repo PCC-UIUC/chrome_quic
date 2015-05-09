@@ -9,12 +9,11 @@
 #include "base/compiler_specific.h"
 #include "base/logging.h"
 #include "base/numerics/safe_conversions.h"
-#include "base/profiler/scoped_tracker.h"
 #include "base/strings/string_util.h"
 #include "base/time/time.h"
 #include "base/values.h"
 #include "net/base/net_errors.h"
-#include "net/base/net_log.h"
+#include "net/log/net_log.h"
 #include "net/socket/client_socket_handle.h"
 #include "net/socket/client_socket_pool_base.h"
 #include "net/socket/websocket_endpoint_lock_manager.h"
@@ -229,18 +228,15 @@ int WebSocketTransportConnectJob::ConnectInternal() {
 WebSocketTransportClientSocketPool::WebSocketTransportClientSocketPool(
     int max_sockets,
     int max_sockets_per_group,
-    ClientSocketPoolHistograms* histograms,
     HostResolver* host_resolver,
     ClientSocketFactory* client_socket_factory,
     NetLog* net_log)
     : TransportClientSocketPool(max_sockets,
                                 max_sockets_per_group,
-                                histograms,
                                 host_resolver,
                                 client_socket_factory,
                                 net_log),
       connect_job_delegate_(this),
-      histograms_(histograms),
       pool_net_log_(net_log),
       client_socket_factory_(client_socket_factory),
       host_resolver_(host_resolver),
@@ -456,11 +452,6 @@ TimeDelta WebSocketTransportClientSocketPool::ConnectionTimeout() const {
   return TimeDelta::FromSeconds(kTransportConnectJobTimeoutInSeconds);
 }
 
-ClientSocketPoolHistograms* WebSocketTransportClientSocketPool::histograms()
-    const {
-  return histograms_;
-}
-
 bool WebSocketTransportClientSocketPool::IsStalled() const {
   return !stalled_request_queue_.empty();
 }
@@ -631,11 +622,6 @@ void
 WebSocketTransportClientSocketPool::ConnectJobDelegate::OnConnectJobComplete(
     int result,
     ConnectJob* job) {
-  // TODO(vadimt): Remove ScopedTracker below once crbug.com/436634 is fixed.
-  tracked_objects::ScopedTracker tracking_profile(
-      FROM_HERE_WITH_EXPLICIT_FUNCTION(
-          "436634 WebSocket...::ConnectJobDelegate::OnConnectJobComplete"));
-
   owner_->OnConnectJobComplete(result,
                                static_cast<WebSocketTransportConnectJob*>(job));
 }

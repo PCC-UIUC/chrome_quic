@@ -6,7 +6,6 @@
 
 #include "base/bind.h"
 #include "base/message_loop/message_loop_proxy.h"
-#include "base/profiler/scoped_tracker.h"
 #include "base/strings/stringprintf.h"
 #include "base/synchronization/cancellation_flag.h"
 #include "base/synchronization/waitable_event.h"
@@ -15,8 +14,8 @@
 #include "base/values.h"
 #include "net/base/address_list.h"
 #include "net/base/net_errors.h"
-#include "net/base/net_log.h"
 #include "net/dns/host_resolver.h"
+#include "net/log/net_log.h"
 #include "net/proxy/proxy_info.h"
 #include "net/proxy/proxy_resolver_error_observer.h"
 #include "net/proxy/proxy_resolver_v8.h"
@@ -57,7 +56,7 @@ const size_t kMaxAlertsAndErrorsBytes = 2048;
 // Returns event parameters for a PAC error message (line number + message).
 base::Value* NetLogErrorCallback(int line_number,
                                  const base::string16* message,
-                                 NetLog::LogLevel /* log_level */) {
+                                 NetLogCaptureMode /* capture_mode */) {
   base::DictionaryValue* dict = new base::DictionaryValue();
   dict->SetInteger("line_number", line_number);
   dict->SetString("message", *message);
@@ -175,8 +174,10 @@ class ProxyResolverV8Tracing::Job
   bool GetDnsFromLocalCache(const std::string& host, ResolveDnsOperation op,
                             std::string* output, bool* return_value);
 
-  void SaveDnsToLocalCache(const std::string& host, ResolveDnsOperation op,
-                           int net_error, const net::AddressList& addresses);
+  void SaveDnsToLocalCache(const std::string& host,
+                           ResolveDnsOperation op,
+                           int net_error,
+                           const AddressList& addresses);
 
   // Builds a RequestInfo to service the specified PAC DNS operation.
   static HostResolver::RequestInfo MakeDnsRequestInfo(const std::string& host,
@@ -707,6 +708,10 @@ void ProxyResolverV8Tracing::Job::DoDnsOperation() {
   } else {
     DCHECK(dns_request);
     pending_dns_ = dns_request;
+    if (!parent_->on_load_state_changed_.is_null()) {
+      parent_->on_load_state_changed_.Run(
+          this, LOAD_STATE_RESOLVING_HOST_IN_PROXY_SCRIPT);
+    }
     // OnDnsOperationComplete() will be called by host resolver on completion.
   }
 
@@ -718,11 +723,6 @@ void ProxyResolverV8Tracing::Job::DoDnsOperation() {
 }
 
 void ProxyResolverV8Tracing::Job::OnDnsOperationComplete(int result) {
-  // TODO(vadimt): Remove ScopedTracker below once crbug.com/436634 is fixed.
-  tracked_objects::ScopedTracker tracking_profile(
-      FROM_HERE_WITH_EXPLICIT_FUNCTION(
-          "436634 ProxyResolverV8Tracing::Job::OnDnsOperationComplete"));
-
   CheckIsOnOriginThread();
 
   DCHECK(!cancelled_.IsSet());
@@ -731,6 +731,12 @@ void ProxyResolverV8Tracing::Job::OnDnsOperationComplete(int result) {
   SaveDnsToLocalCache(pending_dns_host_, pending_dns_op_, result,
                       pending_dns_addresses_);
   pending_dns_ = NULL;
+
+  if (!parent_->on_load_state_changed_.is_null() &&
+      !pending_dns_completed_synchronously_ && !cancelled_.IsSet()) {
+    parent_->on_load_state_changed_.Run(this,
+                                        LOAD_STATE_RESOLVING_PROXY_FOR_URL);
+  }
 
   if (blocking_dns_) {
     event_.Signal();
@@ -778,7 +784,7 @@ void ProxyResolverV8Tracing::Job::SaveDnsToLocalCache(
     const std::string& host,
     ResolveDnsOperation op,
     int net_error,
-    const net::AddressList& addresses) {
+    const AddressList& addresses) {
   CheckIsOnOriginThread();
 
   // Serialize the result into a string to save to the cache.
@@ -934,11 +940,23 @@ ProxyResolverV8Tracing::ProxyResolverV8Tracing(
     HostResolver* host_resolver,
     ProxyResolverErrorObserver* error_observer,
     NetLog* net_log)
+    : ProxyResolverV8Tracing(host_resolver,
+                             error_observer,
+                             net_log,
+                             LoadStateChangedCallback()) {
+}
+
+ProxyResolverV8Tracing::ProxyResolverV8Tracing(
+    HostResolver* host_resolver,
+    ProxyResolverErrorObserver* error_observer,
+    NetLog* net_log,
+    const LoadStateChangedCallback& on_load_state_changed)
     : ProxyResolver(true /*expects_pac_bytes*/),
       host_resolver_(host_resolver),
       error_observer_(error_observer),
       net_log_(net_log),
-      num_outstanding_callbacks_(0) {
+      num_outstanding_callbacks_(0),
+      on_load_state_changed_(on_load_state_changed) {
   DCHECK(host_resolver);
   // Start up the thread.
   thread_.reset(new base::Thread("Proxy resolver"));

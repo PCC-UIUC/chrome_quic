@@ -38,7 +38,6 @@ namespace {
 const char kData1[] = "FooAndBar";
 const char kData2[] = "EepAndBaz";
 const size_t kDataLen = 9;
-const bool kIsServer = true;
 const bool kShouldProcessData = true;
 
 class TestStream : public ReliableQuicStream {
@@ -105,13 +104,9 @@ class ReliableQuicStreamTest : public ::testing::TestWithParam<bool> {
         "JBCScs_ejbKaqBDoB7ZGxTvqlrB__2ZmnHHjCr8RgMRtKNtIeuZAo ";
   }
 
-  void set_supported_versions(const QuicVersionVector& versions) {
-    supported_versions_ = versions;
-  }
-
   void Initialize(bool stream_should_process_data) {
-    connection_ =
-        new StrictMock<MockConnection>(kIsServer, supported_versions_);
+    connection_ = new StrictMock<MockConnection>(Perspective::IS_SERVER,
+                                                 supported_versions_);
     session_.reset(new StrictMock<MockSession>(connection_));
 
     // New streams rely on having the peer's flow control receive window
@@ -154,8 +149,7 @@ TEST_F(ReliableQuicStreamTest, WriteAllData) {
   size_t length = 1 + QuicPacketCreator::StreamFramePacketOverhead(
       PACKET_8BYTE_CONNECTION_ID, !kIncludeVersion,
       PACKET_6BYTE_SEQUENCE_NUMBER, 0u, NOT_IN_FEC_GROUP);
-  QuicConnectionPeer::GetPacketCreator(connection_)->set_max_packet_length(
-      length);
+  QuicConnectionPeer::GetPacketCreator(connection_)->SetMaxPacketLength(length);
 
   EXPECT_CALL(*session_, WritevData(kHeadersStreamId, _, _, _, _, _)).WillOnce(
       Return(QuicConsumedData(kDataLen, true)));
@@ -214,8 +208,7 @@ TEST_F(ReliableQuicStreamTest, WriteOrBufferData) {
   size_t length = 1 + QuicPacketCreator::StreamFramePacketOverhead(
       PACKET_8BYTE_CONNECTION_ID, !kIncludeVersion,
       PACKET_6BYTE_SEQUENCE_NUMBER, 0u, NOT_IN_FEC_GROUP);
-  QuicConnectionPeer::GetPacketCreator(connection_)->set_max_packet_length(
-      length);
+  QuicConnectionPeer::GetPacketCreator(connection_)->SetMaxPacketLength(length);
 
   EXPECT_CALL(*session_, WritevData(_, _, _, _, _, _)).WillOnce(
       Return(QuicConsumedData(kDataLen - 1, false)));
@@ -249,8 +242,7 @@ TEST_F(ReliableQuicStreamTest, WriteOrBufferDataWithFecProtectAlways) {
   size_t length = 1 + QuicPacketCreator::StreamFramePacketOverhead(
       PACKET_8BYTE_CONNECTION_ID, !kIncludeVersion,
       PACKET_6BYTE_SEQUENCE_NUMBER, 0u, IN_FEC_GROUP);
-  QuicConnectionPeer::GetPacketCreator(connection_)->set_max_packet_length(
-      length);
+  QuicConnectionPeer::GetPacketCreator(connection_)->SetMaxPacketLength(length);
 
   // Write first data onto stream, which will cause one session write.
   EXPECT_CALL(*session_, WritevData(_, _, _, _, MUST_FEC_PROTECT, _)).WillOnce(
@@ -285,7 +277,7 @@ TEST_F(ReliableQuicStreamTest, WriteOrBufferDataWithFecProtectOptional) {
   size_t length = 1 + QuicPacketCreator::StreamFramePacketOverhead(
       PACKET_8BYTE_CONNECTION_ID, !kIncludeVersion,
       PACKET_6BYTE_SEQUENCE_NUMBER, 0u, NOT_IN_FEC_GROUP);
-  QuicConnectionPeer::GetPacketCreator(connection_)->set_max_packet_length(
+  QuicConnectionPeer::GetPacketCreator(connection_)->SetMaxPacketLength(
       length);
 
   // Write first data onto stream, which will cause one session write.

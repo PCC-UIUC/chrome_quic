@@ -8,11 +8,11 @@
 #include "base/sha1.h"
 #include "base/strings/string_piece.h"
 #include "crypto/sha2.h"
-#include "net/base/net_log.h"
 #include "net/base/test_completion_callback.h"
 #include "net/http/http_security_headers.h"
 #include "net/http/http_util.h"
 #include "net/http/transport_security_state.h"
+#include "net/log/net_log.h"
 #include "net/ssl/ssl_info.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -593,13 +593,7 @@ TEST_F(HttpSecurityHeadersTest, UpdateDynamicPKPOnly) {
   EXPECT_NE(new_dynamic_domain_state.pkp.spki_hashes.end(), hash);
 }
 
-// Failing on win_chromium_rel. crbug.com/375538
-#if defined(OS_WIN)
-#define MAYBE_UpdateDynamicPKPMaxAge0 DISABLED_UpdateDynamicPKPMaxAge0
-#else
-#define MAYBE_UpdateDynamicPKPMaxAge0 UpdateDynamicPKPMaxAge0
-#endif
-TEST_F(HttpSecurityHeadersTest, MAYBE_UpdateDynamicPKPMaxAge0) {
+TEST_F(HttpSecurityHeadersTest, UpdateDynamicPKPMaxAge0) {
   TransportSecurityState state;
   TransportSecurityState::DomainState static_domain_state;
 
@@ -677,7 +671,6 @@ TEST_F(HttpSecurityHeadersTest, MAYBE_UpdateDynamicPKPMaxAge0) {
                                &failure_log));
   EXPECT_NE(0UL, failure_log.length());
 }
-#undef MAYBE_UpdateDynamicPKPMaxAge0
 
 // Tests that when a static HSTS and a static HPKP entry are present, adding a
 // dynamic HSTS header does not clobber the static HPKP entry. Further, adding a

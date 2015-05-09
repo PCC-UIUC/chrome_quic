@@ -30,6 +30,10 @@
 #include "net/quic/quic_protocol.h"
 #include "net/socket/next_proto.h"
 
+namespace base {
+class SingleThreadTaskRunner;
+}
+
 namespace net {
 
 class ChannelIDService;
@@ -66,7 +70,7 @@ class NET_EXPORT URLRequestContextBuilder {
     HttpNetworkSessionParams();
     ~HttpNetworkSessionParams();
 
-    // These fields mirror those in net::HttpNetworkSession::Params;
+    // These fields mirror those in HttpNetworkSession::Params;
     bool ignore_certificate_errors;
     HostMappingRules* host_mapping_rules;
     uint16 testing_fixed_http_port;
@@ -143,7 +147,7 @@ class NET_EXPORT URLRequestContextBuilder {
   // and |factory| are provided. The builder takes ownership of the factory and
   // Build() must be called after this method.
   void add_http_auth_handler_factory(const std::string& scheme,
-                                     net::HttpAuthHandlerFactory* factory) {
+                                     HttpAuthHandlerFactory* factory) {
     extra_http_auth_handlers_.push_back(SchemeFactory(scheme, factory));
   }
 
@@ -151,7 +155,7 @@ class NET_EXPORT URLRequestContextBuilder {
   void EnableHttpCache(const HttpCacheParams& params);
   void DisableHttpCache();
 
-  // Override default net::HttpNetworkSession::Params settings.
+  // Override default HttpNetworkSession::Params settings.
   void set_http_network_session_params(
       const HttpNetworkSessionParams& http_network_session_params) {
     http_network_session_params_ = http_network_session_params;
@@ -187,16 +191,20 @@ class NET_EXPORT URLRequestContextBuilder {
       const scoped_refptr<CookieStore>& cookie_store,
       scoped_ptr<ChannelIDService> channel_id_service);
 
+  // Sets the task runner used to perform file operations. If not set, one will
+  // be created.
+  void SetFileTaskRunner(
+      const scoped_refptr<base::SingleThreadTaskRunner>& task_runner);
+
   URLRequestContext* Build();
 
  private:
   struct NET_EXPORT SchemeFactory {
-    SchemeFactory(const std::string& scheme,
-                  net::HttpAuthHandlerFactory* factory);
+    SchemeFactory(const std::string& scheme, HttpAuthHandlerFactory* factory);
     ~SchemeFactory();
 
     std::string scheme;
-    net::HttpAuthHandlerFactory* factory;
+    HttpAuthHandlerFactory* factory;
   };
 
   std::string accept_language_;
@@ -214,6 +222,7 @@ class NET_EXPORT URLRequestContextBuilder {
   bool http_cache_enabled_;
   bool throttling_enabled_;
 
+  scoped_refptr<base::SingleThreadTaskRunner> file_task_runner_;
   HttpCacheParams http_cache_params_;
   HttpNetworkSessionParams http_network_session_params_;
   base::FilePath transport_security_persister_path_;

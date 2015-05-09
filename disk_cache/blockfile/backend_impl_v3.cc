@@ -12,7 +12,6 @@
 #include "base/message_loop/message_loop.h"
 #include "base/metrics/field_trial.h"
 #include "base/metrics/histogram.h"
-#include "base/metrics/stats_counters.h"
 #include "base/rand_util.h"
 #include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
@@ -668,8 +667,8 @@ class BackendImplV3::IteratorImpl : public Backend::Iterator {
       : background_queue_(background_queue), data_(NULL) {
   }
 
-  virtual int OpenNextEntry(Entry** next_entry,
-                            const net::CompletionCallback& callback) override {
+  int OpenNextEntry(Entry** next_entry,
+                    const net::CompletionCallback& callback) override {
     if (!background_queue_)
       return net::ERR_FAILED;
     background_queue_->OpenNextEntry(&data_, next_entry, callback);

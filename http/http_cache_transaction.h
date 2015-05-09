@@ -12,13 +12,13 @@
 
 #include "base/time/time.h"
 #include "net/base/completion_callback.h"
-#include "net/base/net_log.h"
 #include "net/base/request_priority.h"
 #include "net/http/http_cache.h"
 #include "net/http/http_request_headers.h"
 #include "net/http/http_response_headers.h"
 #include "net/http/http_response_info.h"
 #include "net/http/http_transaction.h"
+#include "net/log/net_log.h"
 
 namespace net {
 
@@ -138,7 +138,7 @@ class HttpCache::Transaction : public HttpTransaction {
   bool GetLoadTimingInfo(LoadTimingInfo* load_timing_info) const override;
   void SetPriority(RequestPriority priority) override;
   void SetWebSocketHandshakeStreamCreateHelper(
-      net::WebSocketHandshakeStreamBase::CreateHelper* create_helper) override;
+      WebSocketHandshakeStreamBase::CreateHelper* create_helper) override;
   void SetBeforeNetworkStartCallback(
       const BeforeNetworkStartCallback& callback) override;
   void SetBeforeProxyHeadersSentCallback(
@@ -335,7 +335,7 @@ class HttpCache::Transaction : public HttpTransaction {
   // Handles a response validation error by bypassing the cache.
   void IgnoreRangeRequest();
 
-  // Removes content-length and byte range related info if needed.
+  // Fixes the response headers to match expectations for a HEAD request.
   void FixHeadersForHead();
 
   // Launches an asynchronous revalidation based on this transaction.

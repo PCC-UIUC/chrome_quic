@@ -9,7 +9,6 @@
 
 #include "base/callback_helpers.h"
 #include "base/logging.h"
-#include "base/metrics/stats_counters.h"
 #include "base/profiler/scoped_tracker.h"
 #include "base/win/windows_version.h"
 #include "net/base/address_list.h"
@@ -81,11 +80,11 @@ bool DisableNagle(SOCKET socket, bool disable) {
 // Enable TCP Keep-Alive to prevent NAT routers from timing out TCP
 // connections. See http://crbug.com/27400 for details.
 bool SetTCPKeepAlive(SOCKET socket, BOOL enable, int delay_secs) {
-  int delay = delay_secs * 1000;
+  unsigned delay = delay_secs * 1000;
   struct tcp_keepalive keepalive_vals = {
-    enable ? 1 : 0,  // TCP keep-alive on.
-    delay,  // Delay seconds before sending first TCP keep-alive packet.
-    delay,  // Delay seconds between sending TCP keep-alive packets.
+      enable ? 1u : 0u,  // TCP keep-alive on.
+      delay,  // Delay seconds before sending first TCP keep-alive packet.
+      delay,  // Delay seconds between sending TCP keep-alive packets.
   };
   DWORD bytes_returned = 0xABAB;
   int rv = WSAIoctl(socket, SIO_KEEPALIVE_VALS, &keepalive_vals,
@@ -168,10 +167,10 @@ class TCPSocketWin::Core : public base::RefCounted<Core> {
   class ReadDelegate : public base::win::ObjectWatcher::Delegate {
    public:
     explicit ReadDelegate(Core* core) : core_(core) {}
-    virtual ~ReadDelegate() {}
+    ~ReadDelegate() override {}
 
     // base::ObjectWatcher::Delegate methods:
-    virtual void OnObjectSignaled(HANDLE object);
+    void OnObjectSignaled(HANDLE object) override;
 
    private:
     Core* const core_;
@@ -180,10 +179,10 @@ class TCPSocketWin::Core : public base::RefCounted<Core> {
   class WriteDelegate : public base::win::ObjectWatcher::Delegate {
    public:
     explicit WriteDelegate(Core* core) : core_(core) {}
-    virtual ~WriteDelegate() {}
+    ~WriteDelegate() override {}
 
     // base::ObjectWatcher::Delegate methods:
-    virtual void OnObjectSignaled(HANDLE object);
+    void OnObjectSignaled(HANDLE object) override;
 
    private:
     Core* const core_;
@@ -247,11 +246,6 @@ void TCPSocketWin::Core::WatchForWrite() {
 }
 
 void TCPSocketWin::Core::ReadDelegate::OnObjectSignaled(HANDLE object) {
-  // TODO(vadimt): Remove ScopedTracker below once crbug.com/418183 is fixed.
-  tracked_objects::ScopedTracker tracking_profile(
-      FROM_HERE_WITH_EXPLICIT_FUNCTION(
-          "TCPSocketWin_Core_ReadDelegate_OnObjectSignaled"));
-
   DCHECK_EQ(object, core_->read_overlapped_.hEvent);
   if (core_->socket_) {
     if (core_->socket_->waiting_connect_)
@@ -265,11 +259,6 @@ void TCPSocketWin::Core::ReadDelegate::OnObjectSignaled(HANDLE object) {
 
 void TCPSocketWin::Core::WriteDelegate::OnObjectSignaled(
     HANDLE object) {
-  // TODO(vadimt): Remove ScopedTracker below once crbug.com/418183 is fixed.
-  tracked_objects::ScopedTracker tracking_profile(
-      FROM_HERE_WITH_EXPLICIT_FUNCTION(
-          "TCPSocketWin_Core_WriteDelegate_OnObjectSignaled"));
-
   DCHECK_EQ(object, core_->write_overlapped_.hEvent);
   if (core_->socket_)
     core_->socket_->DidCompleteWrite();
@@ -425,10 +414,6 @@ int TCPSocketWin::Accept(scoped_ptr<TCPSocketWin>* socket,
 
 int TCPSocketWin::Connect(const IPEndPoint& address,
                           const CompletionCallback& callback) {
-  // TODO(vadimt): Remove ScopedTracker below once crbug.com/436634 is fixed.
-  tracked_objects::ScopedTracker tracking_profile(
-      FROM_HERE_WITH_EXPLICIT_FUNCTION("436634 TCPSocketWin::Connect"));
-
   DCHECK(CalledOnValidThread());
   DCHECK_NE(socket_, INVALID_SOCKET);
   DCHECK(!waiting_connect_);
@@ -524,9 +509,6 @@ int TCPSocketWin::Write(IOBuffer* buf,
   DCHECK_GT(buf_len, 0);
   DCHECK(!core_->write_iobuffer_.get());
 
-  base::StatsCounter writes("tcp.writes");
-  writes.Increment();
-
   WSABUF write_buffer;
   write_buffer.len = buf_len;
   write_buffer.buf = buf->data();
@@ -546,8 +528,6 @@ int TCPSocketWin::Write(IOBuffer* buf,
                    << " bytes, but " << rv << " bytes reported.";
         return ERR_WINSOCK_UNEXPECTED_WRITTEN_BYTES;
       }
-      base::StatsCounter write_bytes("tcp.write_bytes");
-      write_bytes.Add(rv);
       net_log_.AddByteTransferEvent(NetLog::TYPE_SOCKET_BYTES_SENT, rv,
                                     buf->data());
       NetworkActivityMonitor::GetInstance()->IncrementBytesSent(rv);
@@ -772,10 +752,6 @@ int TCPSocketWin::AcceptInternal(scoped_ptr<TCPSocketWin>* socket,
 }
 
 void TCPSocketWin::OnObjectSignaled(HANDLE object) {
-  // TODO(vadimt): Remove ScopedTracker below once crbug.com/418183 is fixed.
-  tracked_objects::ScopedTracker tracking_profile(
-      FROM_HERE_WITH_EXPLICIT_FUNCTION("TCPSocketWin_OnObjectSignaled"));
-
   WSANETWORKEVENTS ev;
   if (WSAEnumNetworkEvents(socket_, accept_event_, &ev) == SOCKET_ERROR) {
     PLOG(ERROR) << "WSAEnumNetworkEvents()";
@@ -801,10 +777,6 @@ void TCPSocketWin::OnObjectSignaled(HANDLE object) {
 }
 
 int TCPSocketWin::DoConnect() {
-  // TODO(vadimt): Remove ScopedTracker below once crbug.com/436634 is fixed.
-  tracked_objects::ScopedTracker tracking_profile(
-      FROM_HERE_WITH_EXPLICIT_FUNCTION("436634 TCPSocketWin::DoConnect"));
-
   DCHECK_EQ(connect_os_error_, 0);
   DCHECK(!core_.get());
 
@@ -812,10 +784,6 @@ int TCPSocketWin::DoConnect() {
                       CreateNetLogIPEndPointCallback(peer_address_.get()));
 
   core_ = new Core(this);
-
-  // TODO(vadimt): Remove ScopedTracker below once crbug.com/436634 is fixed.
-  tracked_objects::ScopedTracker tracking_profile1(
-      FROM_HERE_WITH_EXPLICIT_FUNCTION("436634 TCPSocketWin::DoConnect1"));
 
   // WSAEventSelect sets the socket to non-blocking mode as a side effect.
   // Our connect() and recv() calls require that the socket be non-blocking.
@@ -825,15 +793,15 @@ int TCPSocketWin::DoConnect() {
   if (!peer_address_->ToSockAddr(storage.addr, &storage.addr_len))
     return ERR_ADDRESS_INVALID;
 
-  // TODO(vadimt): Remove ScopedTracker below once crbug.com/436634 is fixed.
-  tracked_objects::ScopedTracker tracking_profile2(
-      FROM_HERE_WITH_EXPLICIT_FUNCTION("436634 TCPSocketWin::DoConnect2"));
+  int result;
+  {
+    // TODO(ricea): Remove ScopedTracker below once crbug.com/436634 is fixed.
+    tracked_objects::ScopedTracker tracking_profile(
+        FROM_HERE_WITH_EXPLICIT_FUNCTION("436634 connect()"));
+    result = connect(socket_, storage.addr, storage.addr_len);
+  }
 
-  if (!connect(socket_, storage.addr, storage.addr_len)) {
-    // TODO(vadimt): Remove ScopedTracker below once crbug.com/436634 is fixed.
-    tracked_objects::ScopedTracker tracking_profile3(
-        FROM_HERE_WITH_EXPLICIT_FUNCTION("436634 TCPSocketWin::DoConnect3"));
-
+  if (!result) {
     // Connected without waiting!
     //
     // The MSDN page for connect says:
@@ -850,11 +818,6 @@ int TCPSocketWin::DoConnect() {
       return OK;
   } else {
     int os_error = WSAGetLastError();
-
-    // TODO(vadimt): Remove ScopedTracker below once crbug.com/436634 is fixed.
-    tracked_objects::ScopedTracker tracking_profile4(
-        FROM_HERE_WITH_EXPLICIT_FUNCTION("436634 TCPSocketWin::DoConnect4"));
-
     if (os_error != WSAEWOULDBLOCK) {
       LOG(ERROR) << "connect failed: " << os_error;
       connect_os_error_ = os_error;
@@ -864,9 +827,9 @@ int TCPSocketWin::DoConnect() {
     }
   }
 
-  // TODO(vadimt): Remove ScopedTracker below once crbug.com/436634 is fixed.
-  tracked_objects::ScopedTracker tracking_profile5(
-      FROM_HERE_WITH_EXPLICIT_FUNCTION("436634 TCPSocketWin::DoConnect5"));
+  // TODO(ricea): Remove ScopedTracker below once crbug.com/436634 is fixed.
+  tracked_objects::ScopedTracker tracking_profile(
+      FROM_HERE_WITH_EXPLICIT_FUNCTION("436634 WatchForRead()"));
 
   core_->WatchForRead();
   return ERR_IO_PENDING;
@@ -888,9 +851,6 @@ void TCPSocketWin::DoConnectComplete(int result) {
 }
 
 void TCPSocketWin::LogConnectBegin(const AddressList& addresses) {
-  base::StatsCounter connects("tcp.connect");
-  connects.Increment();
-
   net_log_.BeginEvent(NetLog::TYPE_TCP_CONNECT,
                       addresses.CreateNetLogCallback());
 }
@@ -941,9 +901,6 @@ int TCPSocketWin::DoRead(IOBuffer* buf, int buf_len,
       return net_error;
     }
   } else {
-    base::StatsCounter read_bytes("tcp.read_bytes");
-    if (rv > 0)
-      read_bytes.Add(rv);
     net_log_.AddByteTransferEvent(NetLog::TYPE_SOCKET_BYTES_RECEIVED, rv,
                                   buf->data());
     NetworkActivityMonitor::GetInstance()->IncrementBytesReceived(rv);
@@ -964,8 +921,15 @@ void TCPSocketWin::DidCompleteConnect() {
   int result;
 
   WSANETWORKEVENTS events;
-  int rv = WSAEnumNetworkEvents(socket_, core_->read_overlapped_.hEvent,
-                                &events);
+  int rv;
+  {
+    // TODO(pkasting): Remove ScopedTracker below once crbug.com/462784 is
+    // fixed.
+    tracked_objects::ScopedTracker tracking_profile1(
+        FROM_HERE_WITH_EXPLICIT_FUNCTION(
+            "462784 TCPSocketWin::DidCompleteConnect -> WSAEnumNetworkEvents"));
+    rv = WSAEnumNetworkEvents(socket_, core_->read_overlapped_.hEvent, &events);
+  }
   int os_error = 0;
   if (rv == SOCKET_ERROR) {
     NOTREACHED();
@@ -983,6 +947,10 @@ void TCPSocketWin::DidCompleteConnect() {
   DoConnectComplete(result);
   waiting_connect_ = false;
 
+  // TODO(pkasting): Remove ScopedTracker below once crbug.com/462784 is fixed.
+  tracked_objects::ScopedTracker tracking_profile4(
+      FROM_HERE_WITH_EXPLICIT_FUNCTION(
+          "462784 TCPSocketWin::DidCompleteConnect -> read_callback_"));
   DCHECK_NE(result, ERR_IO_PENDING);
   base::ResetAndReturn(&read_callback_).Run(result);
 }
@@ -1012,8 +980,6 @@ void TCPSocketWin::DidCompleteWrite() {
                  << " bytes reported.";
       rv = ERR_WINSOCK_UNEXPECTED_WRITTEN_BYTES;
     } else {
-      base::StatsCounter write_bytes("tcp.write_bytes");
-      write_bytes.Add(num_bytes);
       net_log_.AddByteTransferEvent(NetLog::TYPE_SOCKET_BYTES_SENT, num_bytes,
                                     core_->write_iobuffer_->data());
       NetworkActivityMonitor::GetInstance()->IncrementBytesSent(num_bytes);
@@ -1038,6 +1004,11 @@ void TCPSocketWin::DidSignalRead() {
     os_error = WSAGetLastError();
     rv = MapSystemError(os_error);
   } else if (network_events.lNetworkEvents) {
+    // TODO(pkasting): Remove ScopedTracker below once crbug.com/462778 is
+    // fixed.
+    tracked_objects::ScopedTracker tracking_profile2(
+        FROM_HERE_WITH_EXPLICIT_FUNCTION(
+            "462778 TCPSocketWin::DidSignalRead -> DoRead"));
     DCHECK_EQ(network_events.lNetworkEvents & ~(FD_READ | FD_CLOSE), 0);
     // If network_events.lNetworkEvents is FD_CLOSE and
     // network_events.iErrorCode[FD_CLOSE_BIT] is 0, it is a graceful
@@ -1069,9 +1040,6 @@ void TCPSocketWin::DidSignalRead() {
   core_->read_buffer_length_ = 0;
 
   DCHECK_NE(rv, ERR_IO_PENDING);
-  // TODO(vadimt): Remove ScopedTracker below once crbug.com/418183 is fixed.
-  tracked_objects::ScopedTracker tracking_profile(
-      FROM_HERE_WITH_EXPLICIT_FUNCTION("TCPSocketWin::DidSignalRead"));
   base::ResetAndReturn(&read_callback_).Run(rv);
 }
 

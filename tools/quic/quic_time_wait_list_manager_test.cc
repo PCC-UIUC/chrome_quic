@@ -10,6 +10,7 @@
 #include "net/quic/crypto/null_encrypter.h"
 #include "net/quic/crypto/quic_decrypter.h"
 #include "net/quic/crypto/quic_encrypter.h"
+#include "net/quic/quic_connection_helper.h"
 #include "net/quic/quic_data_reader.h"
 #include "net/quic/quic_flags.h"
 #include "net/quic/quic_framer.h"
@@ -17,6 +18,7 @@
 #include "net/quic/quic_protocol.h"
 #include "net/quic/quic_utils.h"
 #include "net/quic/test_tools/quic_test_utils.h"
+#include "net/tools/quic/quic_epoll_connection_helper.h"
 #include "net/tools/quic/test_tools/mock_epoll_server.h"
 #include "net/tools/quic/test_tools/quic_test_utils.h"
 #include "testing/gmock/include/gmock/gmock.h"
@@ -69,7 +71,7 @@ class QuicTimeWaitListManagerPeer {
   }
 
   static QuicTime::Delta time_wait_period(QuicTimeWaitListManager* manager) {
-    return manager->kTimeWaitPeriod_;
+    return manager->time_wait_period_;
   }
 
   static QuicVersion GetQuicVersionFromConnectionId(
@@ -90,9 +92,14 @@ class MockFakeTimeEpollServer : public FakeTimeEpollServer {
 class QuicTimeWaitListManagerTest : public ::testing::Test {
  protected:
   QuicTimeWaitListManagerTest()
-      : time_wait_list_manager_(&writer_, &visitor_,
-                                &epoll_server_, QuicSupportedVersions()),
-        framer_(QuicSupportedVersions(), QuicTime::Zero(), true),
+      : helper_(&epoll_server_),
+        time_wait_list_manager_(&writer_,
+                                &visitor_,
+                                &helper_,
+                                QuicSupportedVersions()),
+        framer_(QuicSupportedVersions(),
+                QuicTime::Zero(),
+                Perspective::IS_SERVER),
         connection_id_(45),
         client_address_(net::test::TestPeerIPAddress(), kTestPort),
         writer_is_blocked_(false) {}
@@ -152,7 +159,7 @@ class QuicTimeWaitListManagerTest : public ::testing::Test {
     QuicFrames frames;
     frames.push_back(frame);
     scoped_ptr<QuicPacket> packet(
-        BuildUnsizedDataPacket(&framer_, header, frames).packet);
+        BuildUnsizedDataPacket(&framer_, header, frames));
     EXPECT_TRUE(packet != nullptr);
     QuicEncryptedPacket* encrypted = framer_.EncryptPacket(ENCRYPTION_NONE,
                                                            sequence_number,
@@ -162,6 +169,7 @@ class QuicTimeWaitListManagerTest : public ::testing::Test {
   }
 
   NiceMock<MockFakeTimeEpollServer> epoll_server_;
+  QuicEpollConnectionHelper helper_;
   StrictMock<MockPacketWriter> writer_;
   StrictMock<MockQuicServerSessionVisitor> visitor_;
   QuicTimeWaitListManager time_wait_list_manager_;
@@ -180,13 +188,12 @@ class ValidatePublicResetPacketPredicate
       : connection_id_(connection_id), sequence_number_(number) {
   }
 
-  virtual bool MatchAndExplain(
+  bool MatchAndExplain(
       const std::tr1::tuple<const char*, int> packet_buffer,
       testing::MatchResultListener* /* listener */) const override {
     FramerVisitorCapturingPublicReset visitor;
-    QuicFramer framer(QuicSupportedVersions(),
-                      QuicTime::Zero(),
-                      false);
+    QuicFramer framer(QuicSupportedVersions(), QuicTime::Zero(),
+                      Perspective::IS_CLIENT);
     framer.set_visitor(&visitor);
     QuicEncryptedPacket encrypted(std::tr1::get<0>(packet_buffer),
                                   std::tr1::get<1>(packet_buffer));
@@ -199,9 +206,9 @@ class ValidatePublicResetPacketPredicate
         kTestPort == packet.client_address.port();
   }
 
-  virtual void DescribeTo(::std::ostream* os) const override {}
+  void DescribeTo(::std::ostream* os) const override {}
 
-  virtual void DescribeNegationTo(::std::ostream* os) const override {}
+  void DescribeNegationTo(::std::ostream* os) const override {}
 
  private:
   QuicConnectionId connection_id_;
@@ -225,7 +232,7 @@ TEST_F(QuicTimeWaitListManagerTest, CheckConnectionIdInTimeWait) {
 }
 
 TEST_F(QuicTimeWaitListManagerTest, SendConnectionClose) {
-  size_t kConnectionCloseLength = 100;
+  const size_t kConnectionCloseLength = 100;
   EXPECT_CALL(visitor_, OnConnectionAddedToTimeWaitList(connection_id_));
   AddConnectionId(
       connection_id_,
@@ -280,7 +287,7 @@ TEST_F(QuicTimeWaitListManagerTest, CleanUpOldConnectionIds) {
   const size_t kConnectionIdCount = 100;
   const size_t kOldConnectionIdCount = 31;
 
-  // Add connection_ids such that their expiry time is kTimeWaitPeriod_.
+  // Add connection_ids such that their expiry time is time_wait_period_.
   epoll_server_.set_now_in_usec(0);
   for (size_t connection_id = 1; connection_id <= kOldConnectionIdCount;
        ++connection_id) {
@@ -290,7 +297,7 @@ TEST_F(QuicTimeWaitListManagerTest, CleanUpOldConnectionIds) {
   EXPECT_EQ(kOldConnectionIdCount, time_wait_list_manager_.num_connections());
 
   // Add remaining connection_ids such that their add time is
-  // 2 * kTimeWaitPeriod.
+  // 2 * time_wait_period_.
   const QuicTime::Delta time_wait_period =
       QuicTimeWaitListManagerPeer::time_wait_period(&time_wait_list_manager_);
   epoll_server_.set_now_in_usec(time_wait_period.ToMicroseconds());
@@ -415,12 +422,12 @@ TEST_F(QuicTimeWaitListManagerTest, GetQuicVersionFromMap) {
 }
 
 TEST_F(QuicTimeWaitListManagerTest, AddConnectionIdTwice) {
-  // Add connection_ids such that their expiry time is kTimeWaitPeriod_.
+  // Add connection_ids such that their expiry time is time_wait_period_.
   epoll_server_.set_now_in_usec(0);
   EXPECT_CALL(visitor_, OnConnectionAddedToTimeWaitList(connection_id_));
   AddConnectionId(connection_id_);
   EXPECT_TRUE(IsConnectionIdInTimeWait(connection_id_));
-  size_t kConnectionCloseLength = 100;
+  const size_t kConnectionCloseLength = 100;
   AddConnectionId(
       connection_id_,
       QuicVersionMax(),
@@ -461,17 +468,17 @@ TEST_F(QuicTimeWaitListManagerTest, ConnectionIdsOrderedByTime) {
   // 50% flaky.
   int odd_second = static_cast<int>(epoll_server_.ApproximateNowInUsec()) % 2;
   EXPECT_TRUE(odd_second == 0 || odd_second == 1);
-  const QuicConnectionId kConnectionId1 = odd_second;
-  const QuicConnectionId kConnectionId2 = 1 - odd_second;
+  const QuicConnectionId connection_id1 = odd_second;
+  const QuicConnectionId connection_id2 = 1 - odd_second;
 
   // 1 will hash lower than 2, but we add it later. They should come out in the
   // add order, not hash order.
   epoll_server_.set_now_in_usec(0);
-  EXPECT_CALL(visitor_, OnConnectionAddedToTimeWaitList(kConnectionId1));
-  AddConnectionId(kConnectionId1);
+  EXPECT_CALL(visitor_, OnConnectionAddedToTimeWaitList(connection_id1));
+  AddConnectionId(connection_id1);
   epoll_server_.set_now_in_usec(10);
-  EXPECT_CALL(visitor_, OnConnectionAddedToTimeWaitList(kConnectionId2));
-  AddConnectionId(kConnectionId2);
+  EXPECT_CALL(visitor_, OnConnectionAddedToTimeWaitList(connection_id2));
+  AddConnectionId(connection_id2);
   EXPECT_EQ(2u, time_wait_list_manager_.num_connections());
 
   const QuicTime::Delta time_wait_period =
@@ -480,15 +487,14 @@ TEST_F(QuicTimeWaitListManagerTest, ConnectionIdsOrderedByTime) {
 
   EXPECT_CALL(epoll_server_, RegisterAlarm(_, _));
 
-  EXPECT_CALL(visitor_, OnConnectionRemovedFromTimeWaitList(kConnectionId1));
+  EXPECT_CALL(visitor_, OnConnectionRemovedFromTimeWaitList(connection_id1));
   time_wait_list_manager_.CleanUpOldConnectionIds();
-  EXPECT_FALSE(IsConnectionIdInTimeWait(kConnectionId1));
-  EXPECT_TRUE(IsConnectionIdInTimeWait(kConnectionId2));
+  EXPECT_FALSE(IsConnectionIdInTimeWait(connection_id1));
+  EXPECT_TRUE(IsConnectionIdInTimeWait(connection_id2));
   EXPECT_EQ(1u, time_wait_list_manager_.num_connections());
 }
 
 TEST_F(QuicTimeWaitListManagerTest, MaxConnectionsTest) {
-  ValueRestore<bool> old_flag(&FLAGS_quic_limit_time_wait_list_size, true);
   // Basically, shut off time-based eviction.
   FLAGS_quic_time_wait_list_seconds = 10000000000;
   FLAGS_quic_time_wait_list_max_connections = 5;

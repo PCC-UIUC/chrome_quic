@@ -11,6 +11,7 @@
 #include "base/memory/scoped_vector.h"
 #include "base/stl_util.h"
 #include "base/strings/stringprintf.h"
+#include "net/proxy/proxy_service.h"
 #include "net/socket/socket_test_util.h"
 
 namespace net {
@@ -36,6 +37,16 @@ std::string WebSocketStandardRequest(const std::string& path,
                                      const std::string& host,
                                      const std::string& origin,
                                      const std::string& extra_headers) {
+  return WebSocketStandardRequestWithCookies(path, host, origin, std::string(),
+                                             extra_headers);
+}
+
+std::string WebSocketStandardRequestWithCookies(
+    const std::string& path,
+    const std::string& host,
+    const std::string& origin,
+    const std::string& cookies,
+    const std::string& extra_headers) {
   // Unrelated changes in net/http may change the order and default-values of
   // HTTP headers, causing WebSocket tests to fail. It is safe to update this
   // string in that case.
@@ -51,10 +62,12 @@ std::string WebSocketStandardRequest(const std::string& path,
       "User-Agent:\r\n"
       "Accept-Encoding: gzip, deflate\r\n"
       "Accept-Language: en-us,fr\r\n"
+      "%s"
       "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
       "Sec-WebSocket-Extensions: permessage-deflate; client_max_window_bits\r\n"
       "%s\r\n",
-      path.c_str(), host.c_str(), origin.c_str(), extra_headers.c_str());
+      path.c_str(), host.c_str(), origin.c_str(), cookies.c_str(),
+      extra_headers.c_str());
 }
 
 std::string WebSocketStandardResponse(const std::string& extra_headers) {
@@ -149,6 +162,13 @@ void WebSocketTestURLRequestContextHost::AddRawExpectations(
 void WebSocketTestURLRequestContextHost::AddSSLSocketDataProvider(
     scoped_ptr<SSLSocketDataProvider> ssl_socket_data) {
   maker_.AddSSLSocketDataProvider(ssl_socket_data.Pass());
+}
+
+void WebSocketTestURLRequestContextHost::SetProxyConfig(
+    const std::string& proxy_rules) {
+  DCHECK(!url_request_context_initialized_);
+  proxy_service_.reset(ProxyService::CreateFixed(proxy_rules));
+  url_request_context_.set_proxy_service(proxy_service_.get());
 }
 
 TestURLRequestContext*

@@ -67,7 +67,6 @@ int MapOpenSSLErrorSSL(uint32_t error_code) {
     case SSL_R_UNKNOWN_CERTIFICATE_TYPE:
     case SSL_R_UNKNOWN_CIPHER_TYPE:
     case SSL_R_UNKNOWN_KEY_EXCHANGE_TYPE:
-    case SSL_R_UNKNOWN_PKEY_TYPE:
     case SSL_R_UNKNOWN_SSL_VERSION:
       return ERR_NOT_IMPLEMENTED;
     case SSL_R_UNSUPPORTED_SSL_VERSION:
@@ -114,7 +113,6 @@ int MapOpenSSLErrorSSL(uint32_t error_code) {
     case SSL_R_EXTRA_DATA_IN_MESSAGE:
     case SSL_R_GOT_A_FIN_BEFORE_A_CCS:
     case SSL_R_INVALID_COMMAND:
-    case SSL_R_INVALID_STATUS_RESPONSE:
     case SSL_R_INVALID_TICKET_KEYS_LENGTH:
     // SSL_do_handshake reports this error when the server responds to a
     // ClientHello with a fatal close_notify alert.
@@ -157,7 +155,7 @@ int MapOpenSSLErrorSSL(uint32_t error_code) {
 base::Value* NetLogOpenSSLErrorCallback(int net_error,
                                         int ssl_error,
                                         const OpenSSLErrorInfo& error_info,
-                                        NetLog::LogLevel /* log_level */) {
+                                        NetLogCaptureMode /* capture_mode */) {
   base::DictionaryValue* dict = new base::DictionaryValue();
   dict->SetInteger("net_error", net_error);
   dict->SetInteger("ssl_error", ssl_error);

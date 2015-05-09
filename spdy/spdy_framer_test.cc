@@ -89,6 +89,10 @@ class SpdyFramerTestUtil {
       LOG(FATAL);
     }
 
+    void OnStreamPadding(SpdyStreamId stream_id, size_t len) override {
+      LOG(FATAL);
+    }
+
     bool OnControlFrameHeaderData(SpdyStreamId stream_id,
                                   const char* header_data,
                                   size_t len) override {
@@ -291,14 +295,20 @@ class TestSpdyVisitor : public SpdyFramerVisitorInterface,
       ++zero_length_data_frame_count_;
 
     data_bytes_ += len;
-    std::cerr << "OnStreamFrameData(" << stream_id << ", \"";
+    LOG(INFO) << "OnStreamFrameData(" << stream_id << ", \"";
     if (len > 0) {
       for (size_t i = 0 ; i < len; ++i) {
-        std::cerr << std::hex << (0xFF & static_cast<unsigned int>(data[i]))
+        LOG(INFO) << std::hex << (0xFF & static_cast<unsigned int>(data[i]))
                   << std::dec;
       }
     }
-    std::cerr << "\", " << len << ")\n";
+    LOG(INFO) << "\", " << len << ")\n";
+  }
+
+  void OnStreamPadding(SpdyStreamId stream_id, size_t len) override {
+    EXPECT_EQ(header_stream_id_, stream_id);
+    data_bytes_ += len;
+    LOG(INFO) << "OnStreamPadding(" << stream_id << ", " << len << ")\n";
   }
 
   bool OnControlFrameHeaderData(SpdyStreamId stream_id,
@@ -598,16 +608,12 @@ base::StringPiece GetSerializedHeaders(const SpdyFrame* frame,
 
 }  // namespace test
 
-}  // namespace net
-
-using net::test::SetFrameLength;
-using net::test::SetFrameFlags;
-using net::test::CompareCharArraysWithHexError;
-using net::test::SpdyFramerTestUtil;
-using net::test::TestSpdyVisitor;
-using net::test::GetSerializedHeaders;
-
-namespace net {
+using test::SetFrameLength;
+using test::SetFrameFlags;
+using test::CompareCharArraysWithHexError;
+using test::SpdyFramerTestUtil;
+using test::TestSpdyVisitor;
+using test::GetSerializedHeaders;
 
 class SpdyFramerTest : public ::testing::TestWithParam<SpdyMajorVersion> {
  protected:
@@ -871,10 +877,10 @@ TEST_P(SpdyFramerTest, DuplicateHeader) {
 
   if (IsSpdy2()) {
     frame.WriteUInt16(2);  // Number of headers.
-    frame.WriteString("name");
-    frame.WriteString("value1");
-    frame.WriteString("name");
-    frame.WriteString("value2");
+    frame.WriteStringPiece16("name");
+    frame.WriteStringPiece16("value1");
+    frame.WriteStringPiece16("name");
+    frame.WriteStringPiece16("value2");
   } else {
     frame.WriteUInt32(2);  // Number of headers.
     frame.WriteStringPiece32("name");
@@ -917,8 +923,8 @@ TEST_P(SpdyFramerTest, MultiValueHeader) {
   string value("value1\0value2", 13);
   if (IsSpdy2()) {
     frame.WriteUInt16(1);  // Number of headers.
-    frame.WriteString("name");
-    frame.WriteString(value);
+    frame.WriteStringPiece16("name");
+    frame.WriteStringPiece16(value);
   } else if (spdy_version_ > SPDY3) {
     // TODO(jgraettinger): If this pattern appears again, move to test class.
     std::map<string, string> header_set;
@@ -2514,10 +2520,6 @@ TEST_P(SpdyFramerTest, CreateSettings) {
 
     SpdySettingsFlags kFlags = static_cast<SpdySettingsFlags>(0x01);
     SpdySettingsIds kId = SETTINGS_INITIAL_WINDOW_SIZE;
-    SettingsMap settings;
-    settings[kId] = SettingsFlagsAndValue(kFlags, kValue);
-    EXPECT_EQ(kFlags, settings[kId].first);
-    EXPECT_EQ(kValue, settings[kId].second);
     settings_ir.AddSetting(kId,
                            kFlags & SETTINGS_FLAG_PLEASE_PERSIST,
                            kFlags & SETTINGS_FLAG_PERSISTED,
@@ -3273,6 +3275,17 @@ TEST_P(SpdyFramerTest, CreatePushPromiseUncompressed) {
   }
 }
 
+TEST_P(SpdyFramerTest, GetNumberRequiredContinuationFrames) {
+  if (spdy_version_ <= SPDY3) {
+    return;
+  }
+
+  SpdyFramer framer(spdy_version_);
+  // Test case from https://crbug.com/464748.
+  EXPECT_EQ(1u, framer.GetNumberRequiredContinuationFrames(2039));
+  EXPECT_EQ(2u, framer.GetNumberRequiredContinuationFrames(2040));
+}
+
 TEST_P(SpdyFramerTest, CreateContinuationUncompressed) {
   if (spdy_version_ <= SPDY3) {
     return;
@@ -3283,18 +3296,19 @@ TEST_P(SpdyFramerTest, CreateContinuationUncompressed) {
   const char kDescription[] = "CONTINUATION frame";
 
   const unsigned char kFrameData[] = {
-     0x00, 0x00, 0x12, 0x09, 0x00,  // CONTINUATION
-     0x00, 0x00, 0x00, 0x2a,  // Stream 42
-     0x00, 0x03, 0x62, 0x61,  // @.ba
-     0x72, 0x03, 0x66, 0x6f,  // r.fo
-     0x6f, 0x00, 0x03, 0x66,  // o@.f
-     0x6f, 0x6f, 0x03, 0x62,  // oo.b
-     0x61, 0x72,              // ar
+      0x00, 0x00, 0x12, 0x09,  // CONTINUATION
+      0x04, 0x00, 0x00, 0x00,  // end_headers = true
+      0x2a, 0x00, 0x03, 0x62,  // Stream 42, @.b
+      0x61, 0x72, 0x03, 0x66,  // ar.f
+      0x6f, 0x6f, 0x00, 0x03,  // oo@.
+      0x66, 0x6f, 0x6f, 0x03,  // foo.
+      0x62, 0x61, 0x72,        // bar
   };
 
   SpdyContinuationIR continuation(42);
   continuation.SetHeader("bar", "foo");
   continuation.SetHeader("foo", "bar");
+  continuation.set_end_headers(true);
   scoped_ptr<SpdySerializedFrame> frame(
     framer.SerializeContinuation(continuation));
   CompareFrame(kDescription, *frame, kFrameData, arraysize(kFrameData));
@@ -3450,6 +3464,12 @@ TEST_P(SpdyFramerTest, CreatePriority) {
   };
   SpdyPriorityIR priority_ir(2, 1, 16, true);
   scoped_ptr<SpdySerializedFrame> frame(framer.SerializeFrame(priority_ir));
+  CompareFrame(kDescription, *frame, kFrameData, arraysize(kFrameData));
+  SpdyPriorityIR priority2(2);
+  priority2.set_parent_stream_id(1);
+  priority2.set_weight(16);
+  priority2.set_exclusive(true);
+  frame.reset(framer.SerializeFrame(priority2));
   CompareFrame(kDescription, *frame, kFrameData, arraysize(kFrameData));
 }
 
@@ -4115,6 +4135,7 @@ TEST_P(SpdyFramerTest, ProcessDataFrameWithPadding) {
   bytes_consumed += framer.GetDataFrameMinimumSize();
 
   // Send the padding length field.
+  EXPECT_CALL(visitor, OnStreamPadding(1, 1));
   CHECK_EQ(1u, framer.ProcessInput(frame->data() + bytes_consumed, 1));
   CHECK_EQ(framer.state(), SpdyFramer::SPDY_FORWARD_STREAM_FRAME);
   CHECK_EQ(framer.error_code(), SpdyFramer::SPDY_NO_ERROR);
@@ -4135,14 +4156,14 @@ TEST_P(SpdyFramerTest, ProcessDataFrameWithPadding) {
   bytes_consumed += 3;
 
   // Send the first 100 bytes of the padding payload.
-  EXPECT_CALL(visitor, OnStreamFrameData(1, NULL, 100, false));
+  EXPECT_CALL(visitor, OnStreamPadding(1, 100));
   CHECK_EQ(100u, framer.ProcessInput(frame->data() + bytes_consumed, 100));
   CHECK_EQ(framer.state(), SpdyFramer::SPDY_CONSUME_PADDING);
   CHECK_EQ(framer.error_code(), SpdyFramer::SPDY_NO_ERROR);
   bytes_consumed += 100;
 
   // Send rest of the padding payload.
-  EXPECT_CALL(visitor, OnStreamFrameData(1, NULL, 18, false));
+  EXPECT_CALL(visitor, OnStreamPadding(1, 18));
   CHECK_EQ(18u, framer.ProcessInput(frame->data() + bytes_consumed, 18));
   CHECK_EQ(framer.state(), SpdyFramer::SPDY_RESET);
   CHECK_EQ(framer.error_code(), SpdyFramer::SPDY_NO_ERROR);
@@ -4920,7 +4941,9 @@ TEST_P(SpdyFramerTest, DataFrameFlagsV4) {
     } else {
       EXPECT_CALL(visitor, OnDataFrameHeader(1, 5, flags & DATA_FLAG_FIN));
       if (flags & DATA_FLAG_PADDED) {
-        // Expect Error since we don't set padded in payload.
+        // The first byte of payload is parsed as padding length.
+        EXPECT_CALL(visitor, OnStreamPadding(_, 1));
+        // Expect Error since the frame ends prematurely.
         EXPECT_CALL(visitor, OnError(_));
       } else {
         EXPECT_CALL(visitor, OnStreamFrameData(_, _, 5, false));
@@ -4932,10 +4955,9 @@ TEST_P(SpdyFramerTest, DataFrameFlagsV4) {
 
     framer.ProcessInput(frame->data(), frame->size());
     if ((flags & ~valid_data_flags) || (flags & DATA_FLAG_PADDED)) {
-        EXPECT_EQ(SpdyFramer::SPDY_ERROR, framer.state());
-        EXPECT_EQ(SpdyFramer::SPDY_INVALID_DATA_FRAME_FLAGS,
-                  framer.error_code())
-            << SpdyFramer::ErrorCodeToString(framer.error_code());
+      EXPECT_EQ(SpdyFramer::SPDY_ERROR, framer.state());
+      EXPECT_EQ(SpdyFramer::SPDY_INVALID_DATA_FRAME_FLAGS, framer.error_code())
+          << SpdyFramer::ErrorCodeToString(framer.error_code());
     } else {
       EXPECT_EQ(SpdyFramer::SPDY_RESET, framer.state());
       EXPECT_EQ(SpdyFramer::SPDY_NO_ERROR, framer.error_code())
@@ -5354,8 +5376,8 @@ TEST_P(SpdyFramerTest, PushPromiseFrameFlags) {
   do {
     SCOPED_TRACE(testing::Message() << "Flags " << flags);
 
-    testing::StrictMock<net::test::MockSpdyFramerVisitor> visitor;
-    testing::StrictMock<net::test::MockDebugVisitor> debug_visitor;
+    testing::StrictMock<test::MockSpdyFramerVisitor> visitor;
+    testing::StrictMock<test::MockDebugVisitor> debug_visitor;
     SpdyFramer framer(spdy_version_);
     framer.set_visitor(&visitor);
     framer.set_debug_visitor(&debug_visitor);
@@ -5404,7 +5426,7 @@ TEST_P(SpdyFramerTest, ContinuationFrameFlags) {
     SCOPED_TRACE(testing::Message() << "Flags " << flags);
 
     testing::StrictMock<test::MockSpdyFramerVisitor> visitor;
-    testing::StrictMock<net::test::MockDebugVisitor> debug_visitor;
+    testing::StrictMock<test::MockDebugVisitor> debug_visitor;
     SpdyFramer framer(spdy_version_);
     framer.set_visitor(&visitor);
     framer.set_debug_visitor(&debug_visitor);

@@ -14,7 +14,6 @@
 #include "base/memory/scoped_ptr.h"
 #include "base/metrics/field_trial.h"
 #include "base/metrics/histogram.h"
-#include "base/metrics/stats_counters.h"
 #include "base/profiler/scoped_tracker.h"
 #include "base/stl_util.h"
 #include "base/strings/string_number_conversions.h"
@@ -55,7 +54,6 @@
 #include "net/socket/ssl_client_socket.h"
 #include "net/socket/ssl_client_socket_pool.h"
 #include "net/socket/transport_client_socket_pool.h"
-#include "net/spdy/hpack_huffman_aggregator.h"
 #include "net/spdy/spdy_http_stream.h"
 #include "net/spdy/spdy_session.h"
 #include "net/spdy/spdy_session_pool.h"
@@ -80,7 +78,11 @@ void ProcessAlternateProtocol(
   std::string alternate_protocol_str;
   while (headers.EnumerateHeader(&iter, kAlternateProtocolHeader,
                                  &alternate_protocol_str)) {
-    alternate_protocol_values.push_back(alternate_protocol_str);
+    base::TrimWhitespaceASCII(alternate_protocol_str, base::TRIM_ALL,
+                              &alternate_protocol_str);
+    if (!alternate_protocol_str.empty()) {
+      alternate_protocol_values.push_back(alternate_protocol_str);
+    }
   }
 
   session->http_stream_factory()->ProcessAlternateProtocol(
@@ -95,12 +97,22 @@ base::Value* NetLogSSLVersionFallbackCallback(
     int net_error,
     uint16 version_before,
     uint16 version_after,
-    NetLog::LogLevel /* log_level */) {
+    NetLogCaptureMode /* capture_mode */) {
   base::DictionaryValue* dict = new base::DictionaryValue();
   dict->SetString("host_and_port", GetHostAndPort(*url));
   dict->SetInteger("net_error", net_error);
   dict->SetInteger("version_before", version_before);
   dict->SetInteger("version_after", version_after);
+  return dict;
+}
+
+base::Value* NetLogSSLCipherFallbackCallback(
+    const GURL* url,
+    int net_error,
+    NetLogCaptureMode /* capture_mode */) {
+  base::DictionaryValue* dict = new base::DictionaryValue();
+  dict->SetString("host_and_port", GetHostAndPort(*url));
+  dict->SetInteger("net_error", net_error);
   return dict;
 }
 
@@ -163,8 +175,6 @@ HttpNetworkTransaction::~HttpNetworkTransaction() {
 int HttpNetworkTransaction::Start(const HttpRequestInfo* request_info,
                                   const CompletionCallback& callback,
                                   const BoundNetLog& net_log) {
-  SIMPLE_STATS_COUNTER("HttpNetworkTransaction.Count");
-
   net_log_ = net_log;
   request_ = request_info;
 
@@ -179,6 +189,12 @@ int HttpNetworkTransaction::Start(const HttpRequestInfo* request_info,
   // Channel ID is disabled if privacy mode is enabled for this request.
   if (request_->privacy_mode == PRIVACY_MODE_ENABLED)
     server_ssl_config_.channel_id_enabled = false;
+
+  if (server_ssl_config_.fastradio_padding_enabled) {
+    server_ssl_config_.fastradio_padding_eligible =
+        session_->ssl_config_service()->SupportsFastradioPadding(
+            request_info->url);
+  }
 
   next_state_ = STATE_NOTIFY_BEFORE_CREATE_STREAM;
   int rv = DoLoop(OK);
@@ -566,12 +582,13 @@ void HttpNetworkTransaction::OnHttpsProxyTunnelResponse(
   OnIOComplete(ERR_HTTPS_PROXY_TUNNEL_RESPONSE);
 }
 
-bool HttpNetworkTransaction::is_https_request() const {
-  return request_->url.SchemeIs("https");
+bool HttpNetworkTransaction::IsSecureRequest() const {
+  return request_->url.SchemeIsSecure();
 }
 
 bool HttpNetworkTransaction::UsingHttpProxyWithoutTunnel() const {
-  return (proxy_info_.is_http() || proxy_info_.is_https()) &&
+  return (proxy_info_.is_http() || proxy_info_.is_https() ||
+          proxy_info_.is_quic()) &&
          !(request_->url.SchemeIs("https") || request_->url.SchemeIsWSOrWSS());
 }
 
@@ -586,23 +603,17 @@ void HttpNetworkTransaction::DoCallback(int rv) {
 }
 
 void HttpNetworkTransaction::OnIOComplete(int result) {
-  // TODO(vadimt): Remove ScopedTracker below once crbug.com/424359 is fixed.
-  tracked_objects::ScopedTracker tracking_profile1(
-      FROM_HERE_WITH_EXPLICIT_FUNCTION(
-          "424359 HttpNetworkTransaction::OnIOComplete 1"));
-
   int rv = DoLoop(result);
-
-  // TODO(vadimt): Remove ScopedTracker below once crbug.com/424359 is fixed.
-  tracked_objects::ScopedTracker tracking_profile2(
-      FROM_HERE_WITH_EXPLICIT_FUNCTION(
-          "424359 HttpNetworkTransaction::OnIOComplete 2"));
-
   if (rv != ERR_IO_PENDING)
     DoCallback(rv);
 }
 
 int HttpNetworkTransaction::DoLoop(int result) {
+  // TODO(pkasting): Remove ScopedTracker below once crbug.com/424359 is fixed.
+  tracked_objects::ScopedTracker tracking_profile(
+      FROM_HERE_WITH_EXPLICIT_FUNCTION(
+          "424359 HttpNetworkTransaction::DoLoop"));
+
   DCHECK(next_state_ != STATE_NONE);
 
   int rv = result;
@@ -708,6 +719,11 @@ int HttpNetworkTransaction::DoLoop(int result) {
 }
 
 int HttpNetworkTransaction::DoNotifyBeforeCreateStream() {
+  // TODO(pkasting): Remove ScopedTracker below once crbug.com/424359 is fixed.
+  tracked_objects::ScopedTracker tracking_profile(
+      FROM_HERE_WITH_EXPLICIT_FUNCTION(
+          "424359 HttpNetworkTransaction::DoNotifyBeforeCreateStream"));
+
   next_state_ = STATE_CREATE_STREAM;
   bool defer = false;
   if (!before_network_start_callback_.is_null())
@@ -718,6 +734,11 @@ int HttpNetworkTransaction::DoNotifyBeforeCreateStream() {
 }
 
 int HttpNetworkTransaction::DoCreateStream() {
+  // TODO(pkasting): Remove ScopedTracker below once crbug.com/424359 is fixed.
+  tracked_objects::ScopedTracker tracking_profile(
+      FROM_HERE_WITH_EXPLICIT_FUNCTION(
+          "424359 HttpNetworkTransaction::DoCreateStream"));
+
   next_state_ = STATE_CREATE_STREAM_COMPLETE;
   if (ForWebSocketHandshake()) {
     stream_request_.reset(
@@ -745,6 +766,11 @@ int HttpNetworkTransaction::DoCreateStream() {
 }
 
 int HttpNetworkTransaction::DoCreateStreamComplete(int result) {
+  // TODO(pkasting): Remove ScopedTracker below once crbug.com/424359 is fixed.
+  tracked_objects::ScopedTracker tracking_profile(
+      FROM_HERE_WITH_EXPLICIT_FUNCTION(
+          "424359 HttpNetworkTransaction::DoCreateStreamComplete"));
+
   if (result == OK) {
     next_state_ = STATE_INIT_STREAM;
     DCHECK(stream_.get());
@@ -769,12 +795,22 @@ int HttpNetworkTransaction::DoCreateStreamComplete(int result) {
 }
 
 int HttpNetworkTransaction::DoInitStream() {
+  // TODO(pkasting): Remove ScopedTracker below once crbug.com/424359 is fixed.
+  tracked_objects::ScopedTracker tracking_profile(
+      FROM_HERE_WITH_EXPLICIT_FUNCTION(
+          "424359 HttpNetworkTransaction::DoInitStream"));
+
   DCHECK(stream_.get());
   next_state_ = STATE_INIT_STREAM_COMPLETE;
   return stream_->InitializeStream(request_, priority_, net_log_, io_callback_);
 }
 
 int HttpNetworkTransaction::DoInitStreamComplete(int result) {
+  // TODO(pkasting): Remove ScopedTracker below once crbug.com/424359 is fixed.
+  tracked_objects::ScopedTracker tracking_profile(
+      FROM_HERE_WITH_EXPLICIT_FUNCTION(
+          "424359 HttpNetworkTransaction::DoInitStreamComplete"));
+
   if (result == OK) {
     next_state_ = STATE_GENERATE_PROXY_AUTH_TOKEN;
   } else {
@@ -791,6 +827,11 @@ int HttpNetworkTransaction::DoInitStreamComplete(int result) {
 }
 
 int HttpNetworkTransaction::DoGenerateProxyAuthToken() {
+  // TODO(pkasting): Remove ScopedTracker below once crbug.com/424359 is fixed.
+  tracked_objects::ScopedTracker tracking_profile(
+      FROM_HERE_WITH_EXPLICIT_FUNCTION(
+          "424359 HttpNetworkTransaction::DoGenerateProxyAuthToken"));
+
   next_state_ = STATE_GENERATE_PROXY_AUTH_TOKEN_COMPLETE;
   if (!ShouldApplyProxyAuth())
     return OK;
@@ -807,6 +848,11 @@ int HttpNetworkTransaction::DoGenerateProxyAuthToken() {
 }
 
 int HttpNetworkTransaction::DoGenerateProxyAuthTokenComplete(int rv) {
+  // TODO(pkasting): Remove ScopedTracker below once crbug.com/424359 is fixed.
+  tracked_objects::ScopedTracker tracking_profile(
+      FROM_HERE_WITH_EXPLICIT_FUNCTION(
+          "424359 HttpNetworkTransaction::DoGenerateProxyAuthTokenComplete"));
+
   DCHECK_NE(ERR_IO_PENDING, rv);
   if (rv == OK)
     next_state_ = STATE_GENERATE_SERVER_AUTH_TOKEN;
@@ -814,6 +860,11 @@ int HttpNetworkTransaction::DoGenerateProxyAuthTokenComplete(int rv) {
 }
 
 int HttpNetworkTransaction::DoGenerateServerAuthToken() {
+  // TODO(pkasting): Remove ScopedTracker below once crbug.com/424359 is fixed.
+  tracked_objects::ScopedTracker tracking_profile(
+      FROM_HERE_WITH_EXPLICIT_FUNCTION(
+          "424359 HttpNetworkTransaction::DoGenerateServerAuthToken"));
+
   next_state_ = STATE_GENERATE_SERVER_AUTH_TOKEN_COMPLETE;
   HttpAuth::Target target = HttpAuth::AUTH_SERVER;
   if (!auth_controllers_[target].get()) {
@@ -833,6 +884,11 @@ int HttpNetworkTransaction::DoGenerateServerAuthToken() {
 }
 
 int HttpNetworkTransaction::DoGenerateServerAuthTokenComplete(int rv) {
+  // TODO(pkasting): Remove ScopedTracker below once crbug.com/424359 is fixed.
+  tracked_objects::ScopedTracker tracking_profile(
+      FROM_HERE_WITH_EXPLICIT_FUNCTION(
+          "424359 HttpNetworkTransaction::DoGenerateServerAuthTokenComplete"));
+
   DCHECK_NE(ERR_IO_PENDING, rv);
   if (rv == OK)
     next_state_ = STATE_INIT_REQUEST_BODY;
@@ -898,6 +954,11 @@ void HttpNetworkTransaction::BuildRequestHeaders(
 }
 
 int HttpNetworkTransaction::DoInitRequestBody() {
+  // TODO(pkasting): Remove ScopedTracker below once crbug.com/424359 is fixed.
+  tracked_objects::ScopedTracker tracking_profile(
+      FROM_HERE_WITH_EXPLICIT_FUNCTION(
+          "424359 HttpNetworkTransaction::DoInitRequestBody"));
+
   next_state_ = STATE_INIT_REQUEST_BODY_COMPLETE;
   int rv = OK;
   if (request_->upload_data_stream)
@@ -906,12 +967,22 @@ int HttpNetworkTransaction::DoInitRequestBody() {
 }
 
 int HttpNetworkTransaction::DoInitRequestBodyComplete(int result) {
+  // TODO(pkasting): Remove ScopedTracker below once crbug.com/424359 is fixed.
+  tracked_objects::ScopedTracker tracking_profile(
+      FROM_HERE_WITH_EXPLICIT_FUNCTION(
+          "424359 HttpNetworkTransaction::DoInitRequestBodyComplete"));
+
   if (result == OK)
     next_state_ = STATE_BUILD_REQUEST;
   return result;
 }
 
 int HttpNetworkTransaction::DoBuildRequest() {
+  // TODO(pkasting): Remove ScopedTracker below once crbug.com/424359 is fixed.
+  tracked_objects::ScopedTracker tracking_profile(
+      FROM_HERE_WITH_EXPLICIT_FUNCTION(
+          "424359 HttpNetworkTransaction::DoBuildRequest"));
+
   next_state_ = STATE_BUILD_REQUEST_COMPLETE;
   headers_valid_ = false;
 
@@ -926,12 +997,22 @@ int HttpNetworkTransaction::DoBuildRequest() {
 }
 
 int HttpNetworkTransaction::DoBuildRequestComplete(int result) {
+  // TODO(pkasting): Remove ScopedTracker below once crbug.com/424359 is fixed.
+  tracked_objects::ScopedTracker tracking_profile(
+      FROM_HERE_WITH_EXPLICIT_FUNCTION(
+          "424359 HttpNetworkTransaction::DoBuildRequestComplete"));
+
   if (result == OK)
     next_state_ = STATE_SEND_REQUEST;
   return result;
 }
 
 int HttpNetworkTransaction::DoSendRequest() {
+  // TODO(pkasting): Remove ScopedTracker below once crbug.com/424359 is fixed.
+  tracked_objects::ScopedTracker tracking_profile(
+      FROM_HERE_WITH_EXPLICIT_FUNCTION(
+          "424359 HttpNetworkTransaction::DoSendRequest"));
+
   send_start_time_ = base::TimeTicks::Now();
   next_state_ = STATE_SEND_REQUEST_COMPLETE;
 
@@ -939,6 +1020,11 @@ int HttpNetworkTransaction::DoSendRequest() {
 }
 
 int HttpNetworkTransaction::DoSendRequestComplete(int result) {
+  // TODO(pkasting): Remove ScopedTracker below once crbug.com/424359 is fixed.
+  tracked_objects::ScopedTracker tracking_profile(
+      FROM_HERE_WITH_EXPLICIT_FUNCTION(
+          "424359 HttpNetworkTransaction::DoSendRequestComplete"));
+
   send_end_time_ = base::TimeTicks::Now();
   if (result < 0)
     return HandleIOError(result);
@@ -948,11 +1034,21 @@ int HttpNetworkTransaction::DoSendRequestComplete(int result) {
 }
 
 int HttpNetworkTransaction::DoReadHeaders() {
+  // TODO(pkasting): Remove ScopedTracker below once crbug.com/424359 is fixed.
+  tracked_objects::ScopedTracker tracking_profile(
+      FROM_HERE_WITH_EXPLICIT_FUNCTION(
+          "424359 HttpNetworkTransaction::DoReadHeaders"));
+
   next_state_ = STATE_READ_HEADERS_COMPLETE;
   return stream_->ReadResponseHeaders(io_callback_);
 }
 
 int HttpNetworkTransaction::DoReadHeadersComplete(int result) {
+  // TODO(pkasting): Remove ScopedTracker below once crbug.com/424359 is fixed.
+  tracked_objects::ScopedTracker tracking_profile(
+      FROM_HERE_WITH_EXPLICIT_FUNCTION(
+          "424359 HttpNetworkTransaction::DoReadHeadersComplete"));
+
   // We can get a certificate error or ERR_SSL_CLIENT_AUTH_CERT_NEEDED here
   // due to SSL renegotiation.
   if (IsCertificateError(result)) {
@@ -965,7 +1061,7 @@ int HttpNetworkTransaction::DoReadHeadersComplete(int result) {
   } else if (result == ERR_SSL_CLIENT_AUTH_CERT_NEEDED) {
     // TODO(wtc): Need a test case for this code path!
     DCHECK(stream_.get());
-    DCHECK(is_https_request());
+    DCHECK(IsSecureRequest());
     response_.cert_request_info = new SSLCertRequestInfo;
     stream_->GetSSLCertRequestInfo(response_.cert_request_info.get());
     result = HandleCertificateRequest(result);
@@ -1046,22 +1142,19 @@ int HttpNetworkTransaction::DoReadHeadersComplete(int result) {
   if (rv != OK)
     return rv;
 
-  if (is_https_request())
+  if (IsSecureRequest())
     stream_->GetSSLInfo(&response_.ssl_info);
 
   headers_valid_ = true;
-
-  if (session_->huffman_aggregator()) {
-    session_->huffman_aggregator()->AggregateTransactionCharacterCounts(
-        *request_,
-        request_headers_,
-        proxy_info_.proxy_server(),
-        *response_.headers.get());
-  }
   return OK;
 }
 
 int HttpNetworkTransaction::DoReadBody() {
+  // TODO(pkasting): Remove ScopedTracker below once crbug.com/424359 is fixed.
+  tracked_objects::ScopedTracker tracking_profile(
+      FROM_HERE_WITH_EXPLICIT_FUNCTION(
+          "424359 HttpNetworkTransaction::DoReadBody"));
+
   DCHECK(read_buf_.get());
   DCHECK_GT(read_buf_len_, 0);
   DCHECK(stream_ != NULL);
@@ -1072,6 +1165,11 @@ int HttpNetworkTransaction::DoReadBody() {
 }
 
 int HttpNetworkTransaction::DoReadBodyComplete(int result) {
+  // TODO(pkasting): Remove ScopedTracker below once crbug.com/424359 is fixed.
+  tracked_objects::ScopedTracker tracking_profile(
+      FROM_HERE_WITH_EXPLICIT_FUNCTION(
+          "424359 HttpNetworkTransaction::DoReadBodyComplete"));
+
   // We are done with the Read call.
   bool done = false;
   if (result <= 0) {
@@ -1117,6 +1215,11 @@ int HttpNetworkTransaction::DoReadBodyComplete(int result) {
 }
 
 int HttpNetworkTransaction::DoDrainBodyForAuthRestart() {
+  // TODO(pkasting): Remove ScopedTracker below once crbug.com/424359 is fixed.
+  tracked_objects::ScopedTracker tracking_profile(
+      FROM_HERE_WITH_EXPLICIT_FUNCTION(
+          "424359 HttpNetworkTransaction::DoDrainBodyForAuthRestart"));
+
   // This method differs from DoReadBody only in the next_state_.  So we just
   // call DoReadBody and override the next_state_.  Perhaps there is a more
   // elegant way for these two methods to share code.
@@ -1129,6 +1232,11 @@ int HttpNetworkTransaction::DoDrainBodyForAuthRestart() {
 // TODO(wtc): This method and the DoReadBodyComplete method are almost
 // the same.  Figure out a good way for these two methods to share code.
 int HttpNetworkTransaction::DoDrainBodyForAuthRestartComplete(int result) {
+  // TODO(pkasting): Remove ScopedTracker below once crbug.com/424359 is fixed.
+  tracked_objects::ScopedTracker tracking_profile(
+      FROM_HERE_WITH_EXPLICIT_FUNCTION(
+          "424359 HttpNetworkTransaction::DoDrainBodyForAuthRestartComplete"));
+
   // keep_alive defaults to true because the very reason we're draining the
   // response body is to reuse the connection for auth restart.
   bool done = false, keep_alive = true;
@@ -1240,6 +1348,21 @@ void HttpNetworkTransaction::HandleClientAuthError(int error) {
 int HttpNetworkTransaction::HandleSSLHandshakeError(int error) {
   DCHECK(request_);
   HandleClientAuthError(error);
+
+  // Accept deprecated cipher suites, but only on a fallback. This makes UMA
+  // reflect servers require a deprecated cipher rather than merely prefer
+  // it. This, however, has no security benefit until the ciphers are actually
+  // removed.
+  if (!server_ssl_config_.enable_deprecated_cipher_suites &&
+      (error == ERR_SSL_VERSION_OR_CIPHER_MISMATCH ||
+       error == ERR_CONNECTION_CLOSED || error == ERR_CONNECTION_RESET)) {
+    net_log_.AddEvent(
+        NetLog::TYPE_SSL_CIPHER_FALLBACK,
+        base::Bind(&NetLogSSLCipherFallbackCallback, &request_->url, error));
+    server_ssl_config_.enable_deprecated_cipher_suites = true;
+    ResetConnectionAndRequestForResend();
+    return OK;
+  }
 
   bool should_fallback = false;
   uint16 version_max = server_ssl_config_.version_max;

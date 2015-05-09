@@ -7,6 +7,7 @@
 #include <algorithm>
 
 #include "base/compiler_specific.h"
+#include "base/profiler/scoped_tracker.h"
 #include "base/time/time.h"
 #include "base/values.h"
 #include "net/base/load_flags.h"
@@ -32,7 +33,6 @@ namespace net {
 HttpProxySocketParams::HttpProxySocketParams(
     const scoped_refptr<TransportSocketParams>& transport_params,
     const scoped_refptr<SSLSocketParams>& ssl_params,
-    const GURL& request_url,
     const std::string& user_agent,
     const HostPortPair& endpoint,
     HttpAuthCache* http_auth_cache,
@@ -43,7 +43,6 @@ HttpProxySocketParams::HttpProxySocketParams(
     : transport_params_(transport_params),
       ssl_params_(ssl_params),
       spdy_session_pool_(spdy_session_pool),
-      request_url_(request_url),
       user_agent_(user_agent),
       endpoint_(endpoint),
       http_auth_cache_(tunnel ? http_auth_cache : NULL),
@@ -128,6 +127,10 @@ void HttpProxyConnectJob::GetAdditionalErrorState(ClientSocketHandle * handle) {
 }
 
 void HttpProxyConnectJob::OnIOComplete(int result) {
+  // TODO(pkasting): Remove ScopedTracker below once crbug.com/455884 is fixed.
+  tracked_objects::ScopedTracker tracking_profile(
+      FROM_HERE_WITH_EXPLICIT_FUNCTION(
+          "455884 HttpProxyConnectJob::OnIOComplete"));
   int rv = DoLoop(result);
   if (rv != ERR_IO_PENDING) {
     NotifyProxyDelegateOfCompletion(rv);
@@ -286,7 +289,6 @@ int HttpProxyConnectJob::DoHttpProxyConnect() {
   // Add a HttpProxy connection on top of the tcp socket.
   transport_socket_.reset(
       new HttpProxyClientSocket(transport_socket_handle_.release(),
-                                params_->request_url(),
                                 params_->user_agent(),
                                 params_->endpoint(),
                                 proxy_server,
@@ -338,12 +340,10 @@ int HttpProxyConnectJob::DoSpdyProxyCreateStream() {
   }
 
   next_state_ = STATE_SPDY_PROXY_CREATE_STREAM_COMPLETE;
-  return spdy_stream_request_.StartRequest(SPDY_BIDIRECTIONAL_STREAM,
-                                           spdy_session,
-                                           params_->request_url(),
-                                           priority(),
-                                           spdy_session->net_log(),
-                                           callback_);
+  return spdy_stream_request_.StartRequest(
+      SPDY_BIDIRECTIONAL_STREAM, spdy_session,
+      GURL("https://" + params_->endpoint().ToString()), priority(),
+      spdy_session->net_log(), callback_);
 }
 
 int HttpProxyConnectJob::DoSpdyProxyCreateStreamComplete(int result) {
@@ -358,7 +358,6 @@ int HttpProxyConnectJob::DoSpdyProxyCreateStreamComplete(int result) {
       new SpdyProxyClientSocket(stream,
                                 params_->user_agent(),
                                 params_->endpoint(),
-                                params_->request_url(),
                                 params_->destination().host_port_pair(),
                                 net_log(),
                                 params_->http_auth_cache(),
@@ -440,18 +439,17 @@ HttpProxyClientSocketPool::HttpProxyConnectJobFactory::ConnectionTimeout(
 HttpProxyClientSocketPool::HttpProxyClientSocketPool(
     int max_sockets,
     int max_sockets_per_group,
-    ClientSocketPoolHistograms* histograms,
     TransportClientSocketPool* transport_pool,
     SSLClientSocketPool* ssl_pool,
     NetLog* net_log)
     : transport_pool_(transport_pool),
       ssl_pool_(ssl_pool),
-      base_(this, max_sockets, max_sockets_per_group, histograms,
+      base_(this,
+            max_sockets,
+            max_sockets_per_group,
             ClientSocketPool::unused_idle_socket_timeout(),
             ClientSocketPool::used_idle_socket_timeout(),
-            new HttpProxyConnectJobFactory(transport_pool,
-                                           ssl_pool,
-                                           net_log)) {
+            new HttpProxyConnectJobFactory(transport_pool, ssl_pool, net_log)) {
   // We should always have a |transport_pool_| except in unit tests.
   if (transport_pool_)
     base_.AddLowerLayeredPool(transport_pool_);
@@ -542,10 +540,6 @@ base::DictionaryValue* HttpProxyClientSocketPool::GetInfoAsValue(
 
 base::TimeDelta HttpProxyClientSocketPool::ConnectionTimeout() const {
   return base_.ConnectionTimeout();
-}
-
-ClientSocketPoolHistograms* HttpProxyClientSocketPool::histograms() const {
-  return base_.histograms();
 }
 
 bool HttpProxyClientSocketPool::IsStalled() const {

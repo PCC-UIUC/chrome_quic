@@ -53,7 +53,8 @@
 #ifndef NET_QUIC_QUIC_PACKET_GENERATOR_H_
 #define NET_QUIC_QUIC_PACKET_GENERATOR_H_
 
-#include "base/containers/hash_tables.h"
+#include <list>
+
 #include "net/quic/quic_ack_notifier.h"
 #include "net/quic/quic_packet_creator.h"
 #include "net/quic/quic_sent_packet_manager.h"
@@ -73,8 +74,9 @@ class NET_EXPORT_PRIVATE QuicPacketGenerator {
     virtual bool ShouldGeneratePacket(TransmissionType transmission_type,
                                       HasRetransmittableData retransmittable,
                                       IsHandshake handshake) = 0;
-    virtual QuicAckFrame* CreateAckFrame() = 0;
-    virtual QuicStopWaitingFrame* CreateStopWaitingFrame() = 0;
+    virtual void PopulateAckFrame(QuicAckFrame* ack) = 0;
+    virtual void PopulateStopWaitingFrame(
+        QuicStopWaitingFrame* stop_waiting) = 0;
     // Takes ownership of |packet.packet| and |packet.retransmittable_frames|.
     virtual void OnSerializedPacket(const SerializedPacket& packet) = 0;
     virtual void CloseConnection(QuicErrorCode error, bool from_peer) = 0;
@@ -110,9 +112,6 @@ class NET_EXPORT_PRIVATE QuicPacketGenerator {
   // The contents of the frame(s) will be generated via a call to the delegate
   // CreateAckFrame() when the packet is serialized.
   void SetShouldSendAck(bool also_send_stop_waiting);
-
-  // Indicates that a STOP_WAITING frame should be sent.
-  void SetShouldSendStopWaiting();
 
   void AddControlFrame(const QuicFrame& frame);
 
@@ -156,7 +155,7 @@ class NET_EXPORT_PRIVATE QuicPacketGenerator {
   // Caller must ensure that any open FEC group is closed before calling this
   // method.
   SerializedPacket ReserializeAllFrames(
-      const QuicFrames& frames,
+      const RetransmittableFrames& frames,
       QuicSequenceNumberLength original_length);
 
   // Update the sequence number length to use in future packets as soon as it
@@ -177,6 +176,9 @@ class NET_EXPORT_PRIVATE QuicPacketGenerator {
   // set. OnFecTimeout should be called to send the FEC packet when the alarm
   // fires.
   QuicTime::Delta GetFecTimeout(QuicPacketSequenceNumber sequence_number);
+
+  // Sets the encrypter to use for the encryption level.
+  void SetEncrypter(EncryptionLevel level, QuicEncrypter* encrypter);
 
   // Sets the encryption level that will be applied to new packets.
   void set_encryption_level(EncryptionLevel level);
@@ -252,11 +254,15 @@ class NET_EXPORT_PRIVATE QuicPacketGenerator {
   // have to hold a reference to it until we flush (and serialize it).
   // Retransmittable frames are referenced elsewhere so that they
   // can later be (optionally) retransmitted.
-  scoped_ptr<QuicAckFrame> pending_ack_frame_;
-  scoped_ptr<QuicStopWaitingFrame> pending_stop_waiting_frame_;
+  QuicAckFrame pending_ack_frame_;
+  QuicStopWaitingFrame pending_stop_waiting_frame_;
+  // True if an ack or stop waiting frame is already queued, and should not be
+  // re-added.
+  bool ack_queued_;
+  bool stop_waiting_queued_;
 
   // Stores notifiers that should be attached to the next serialized packet.
-  base::hash_set<QuicAckNotifier*> ack_notifiers_;
+  std::list<QuicAckNotifier*> ack_notifiers_;
 
   DISALLOW_COPY_AND_ASSIGN(QuicPacketGenerator);
 };

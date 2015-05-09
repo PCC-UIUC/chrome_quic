@@ -1,3 +1,1 @@
-# chrome_quic
-
-Implement PCC for QUIC
+TODO: Add network stack documentation. :)

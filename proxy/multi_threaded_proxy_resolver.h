@@ -20,27 +20,7 @@ class Thread;
 }  // namespace base
 
 namespace net {
-
-// ProxyResolverFactory is an interface for creating ProxyResolver instances.
-class ProxyResolverFactory {
- public:
-  explicit ProxyResolverFactory(bool resolvers_expect_pac_bytes)
-      : resolvers_expect_pac_bytes_(resolvers_expect_pac_bytes) {}
-
-  virtual ~ProxyResolverFactory() {}
-
-  // Creates a new ProxyResolver. The caller is responsible for freeing this
-  // object.
-  virtual ProxyResolver* CreateProxyResolver() = 0;
-
-  bool resolvers_expect_pac_bytes() const {
-    return resolvers_expect_pac_bytes_;
-  }
-
- private:
-  bool resolvers_expect_pac_bytes_;
-  DISALLOW_COPY_AND_ASSIGN(ProxyResolverFactory);
-};
+class LegacyProxyResolverFactory;
 
 // MultiThreadedProxyResolver is a ProxyResolver implementation that runs
 // synchronous ProxyResolver implementations on worker threads.
@@ -85,7 +65,7 @@ class NET_EXPORT_PRIVATE MultiThreadedProxyResolver
   // prior to destruction.
   //
   // The constructor takes ownership of |resolver_factory|.
-  MultiThreadedProxyResolver(ProxyResolverFactory* resolver_factory,
+  MultiThreadedProxyResolver(LegacyProxyResolverFactory* resolver_factory,
                              size_t max_num_threads);
 
   ~MultiThreadedProxyResolver() override;
@@ -129,7 +109,7 @@ class NET_EXPORT_PRIVATE MultiThreadedProxyResolver
   // Starts the next job from |pending_jobs_| if possible.
   void OnExecutorReady(Executor* executor);
 
-  const scoped_ptr<ProxyResolverFactory> resolver_factory_;
+  const scoped_ptr<LegacyProxyResolverFactory> resolver_factory_;
   const size_t max_num_threads_;
   PendingJobsQueue pending_jobs_;
   ExecutorList executors_;

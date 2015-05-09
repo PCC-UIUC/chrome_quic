@@ -12,6 +12,7 @@
 #include "base/files/file_path.h"
 #include "base/lazy_instance.h"
 #include "base/memory/scoped_ptr.h"
+#include "base/profiler/scoped_tracker.h"
 #include "base/strings/string_piece.h"
 #include "base/strings/string_util.h"
 #include "base/strings/sys_string_conversions.h"
@@ -207,13 +208,19 @@ WifiPHYLayerProtocol GetWifiPHYLayerProtocol() {
   internal::WlanHandle client;
   DWORD cur_version = 0;
   const DWORD kMaxClientVersion = 2;
-  DWORD result = wlanapi.OpenHandle(kMaxClientVersion, &cur_version, &client);
-  if (result != ERROR_SUCCESS)
-    return WIFI_PHY_LAYER_PROTOCOL_NONE;
+  {
+    // TODO(rtenneti): Remove ScopedTracker below once crbug.com/422516 is
+    // fixed.
+    tracked_objects::ScopedTracker tracking_profile(
+        FROM_HERE_WITH_EXPLICIT_FUNCTION("422516 OpenHandle()"));
+    DWORD result = wlanapi.OpenHandle(kMaxClientVersion, &cur_version, &client);
+    if (result != ERROR_SUCCESS)
+      return WIFI_PHY_LAYER_PROTOCOL_NONE;
+  }
 
   WLAN_INTERFACE_INFO_LIST* interface_list_ptr = NULL;
-  result = wlanapi.enum_interfaces_func(client.Get(), NULL,
-                                        &interface_list_ptr);
+  DWORD result =
+      wlanapi.enum_interfaces_func(client.Get(), NULL, &interface_list_ptr);
   if (result != ERROR_SUCCESS)
     return WIFI_PHY_LAYER_PROTOCOL_NONE;
   scoped_ptr<WLAN_INTERFACE_INFO_LIST, internal::WlanApiDeleter> interface_list(
@@ -318,6 +325,11 @@ class WifiOptionSetter : public ScopedWifiOptions {
 
 scoped_ptr<ScopedWifiOptions> SetWifiOptions(int options) {
   return scoped_ptr<ScopedWifiOptions>(new WifiOptionSetter(options));
+}
+
+std::string GetWifiSSID() {
+  NOTIMPLEMENTED();
+  return "";
 }
 
 }  // namespace net

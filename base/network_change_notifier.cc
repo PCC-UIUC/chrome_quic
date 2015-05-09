@@ -611,8 +611,7 @@ void NetworkChangeNotifier::LogOperatorCodeHistogram(ConnectionType type) {
       type == NetworkChangeNotifier::CONNECTION_3G ||
       type == NetworkChangeNotifier::CONNECTION_4G) {
     // Log zero if not perfectly converted.
-    if (!base::StringToUint(
-        net::android::GetTelephonyNetworkOperator(), &mcc_mnc)) {
+    if (!base::StringToUint(android::GetTelephonyNetworkOperator(), &mcc_mnc)) {
       mcc_mnc = 0;
     }
   }
@@ -652,6 +651,27 @@ bool NetworkChangeNotifier::IsConnectionCellular(ConnectionType type) {
       break;
   }
   return is_cellular;
+}
+
+// static
+NetworkChangeNotifier::ConnectionType
+NetworkChangeNotifier::ConnectionTypeFromInterfaceList(
+    const NetworkInterfaceList& interfaces) {
+  bool first = true;
+  ConnectionType result = CONNECTION_NONE;
+  for (size_t i = 0; i < interfaces.size(); ++i) {
+#if defined(OS_WIN)
+    if (interfaces[i].friendly_name == "Teredo Tunneling Pseudo-Interface")
+      continue;
+#endif
+    if (first) {
+      first = false;
+      result = interfaces[i].type;
+    } else if (result != interfaces[i].type) {
+      return CONNECTION_UNKNOWN;
+    }
+  }
+  return result;
 }
 
 // static
@@ -752,6 +772,12 @@ void NetworkChangeNotifier::NotifyObserversOfNetworkChangeForTests(
     ConnectionType type) {
   if (g_network_change_notifier)
     g_network_change_notifier->NotifyObserversOfNetworkChangeImpl(type);
+}
+
+// static
+void NetworkChangeNotifier::NotifyObserversOfInitialDNSConfigReadForTests() {
+  if (g_network_change_notifier)
+    g_network_change_notifier->NotifyObserversOfInitialDNSConfigReadImpl();
 }
 
 // static
@@ -920,6 +946,14 @@ void NetworkChangeNotifier::NotifyObserversOfDNSChange() {
 }
 
 // static
+void NetworkChangeNotifier::NotifyObserversOfInitialDNSConfigRead() {
+  if (g_network_change_notifier &&
+      !g_network_change_notifier->test_notifications_only_) {
+    g_network_change_notifier->NotifyObserversOfInitialDNSConfigReadImpl();
+  }
+}
+
+// static
 void NetworkChangeNotifier::SetDnsConfig(const DnsConfig& config) {
   if (!g_network_change_notifier)
     return;
@@ -927,30 +961,51 @@ void NetworkChangeNotifier::SetDnsConfig(const DnsConfig& config) {
   NotifyObserversOfDNSChange();
 }
 
+// static
+void NetworkChangeNotifier::SetInitialDnsConfig(const DnsConfig& config) {
+  if (!g_network_change_notifier)
+    return;
+#if DCHECK_IS_ON()
+  // Verify we've never received a valid DnsConfig previously.
+  DnsConfig old_config;
+  g_network_change_notifier->network_state_->GetDnsConfig(&old_config);
+  DCHECK(!old_config.IsValid());
+#endif
+  g_network_change_notifier->network_state_->SetDnsConfig(config);
+  NotifyObserversOfInitialDNSConfigRead();
+}
+
 void NetworkChangeNotifier::NotifyObserversOfIPAddressChangeImpl() {
-  ip_address_observer_list_->Notify(&IPAddressObserver::OnIPAddressChanged);
+  ip_address_observer_list_->Notify(FROM_HERE,
+                                    &IPAddressObserver::OnIPAddressChanged);
 }
 
 void NetworkChangeNotifier::NotifyObserversOfConnectionTypeChangeImpl(
     ConnectionType type) {
   connection_type_observer_list_->Notify(
-      &ConnectionTypeObserver::OnConnectionTypeChanged, type);
+      FROM_HERE, &ConnectionTypeObserver::OnConnectionTypeChanged, type);
 }
 
 void NetworkChangeNotifier::NotifyObserversOfNetworkChangeImpl(
     ConnectionType type) {
   network_change_observer_list_->Notify(
-      &NetworkChangeObserver::OnNetworkChanged, type);
+      FROM_HERE, &NetworkChangeObserver::OnNetworkChanged, type);
 }
 
 void NetworkChangeNotifier::NotifyObserversOfDNSChangeImpl() {
-  resolver_state_observer_list_->Notify(&DNSObserver::OnDNSChanged);
+  resolver_state_observer_list_->Notify(FROM_HERE, &DNSObserver::OnDNSChanged);
+}
+
+void NetworkChangeNotifier::NotifyObserversOfInitialDNSConfigReadImpl() {
+  resolver_state_observer_list_->Notify(FROM_HERE,
+                                        &DNSObserver::OnInitialDNSConfigRead);
 }
 
 void NetworkChangeNotifier::NotifyObserversOfMaxBandwidthChangeImpl(
     double max_bandwidth_mbps) {
   max_bandwidth_observer_list_->Notify(
-      &MaxBandwidthObserver::OnMaxBandwidthChanged, max_bandwidth_mbps);
+      FROM_HERE, &MaxBandwidthObserver::OnMaxBandwidthChanged,
+      max_bandwidth_mbps);
 }
 
 NetworkChangeNotifier::DisableForTest::DisableForTest()
@@ -962,6 +1017,9 @@ NetworkChangeNotifier::DisableForTest::DisableForTest()
 NetworkChangeNotifier::DisableForTest::~DisableForTest() {
   DCHECK(!g_network_change_notifier);
   g_network_change_notifier = network_change_notifier_;
+}
+
+void NetworkChangeNotifier::DNSObserver::OnInitialDNSConfigRead() {
 }
 
 }  // namespace net

@@ -10,6 +10,7 @@
 #include "base/basictypes.h"
 #include "base/memory/scoped_ptr.h"
 #include "net/base/ip_endpoint.h"
+#include "net/quic/proto/cached_network_parameters.pb.h"
 #include "net/quic/quic_framer.h"
 #include "net/quic/quic_packet_creator.h"
 #include "net/quic/quic_protocol.h"
@@ -50,10 +51,15 @@ class MockableQuicClient : public QuicClient {
   QuicConnectionId GenerateConnectionId() override;
   void UseWriter(QuicPacketWriterWrapper* writer);
   void UseConnectionId(QuicConnectionId connection_id);
+  void SendCachedNetworkParamaters(
+      const CachedNetworkParameters& cached_network_params) {
+    cached_network_paramaters_ = cached_network_params;
+  }
 
  private:
   QuicConnectionId override_connection_id_;  // ConnectionId to use, if nonzero
   QuicPacketWriterWrapper* test_writer_;
+  CachedNetworkParameters cached_network_paramaters_;
 
   DISALLOW_COPY_AND_ASSIGN(MockableQuicClient);
 };
@@ -180,7 +186,7 @@ class QuicTestClient : public SimpleClient,
 
   bool response_complete_;
   bool response_headers_complete_;
-  BalsaHeaders headers_;
+  mutable BalsaHeaders headers_;
   QuicPriority priority_;
   std::string response_;
   uint64 bytes_read_;

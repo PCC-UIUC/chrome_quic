@@ -22,7 +22,8 @@ using std::vector;
 
 namespace net {
 
-#define ENDPOINT (is_server() ? "Server: " : " Client: ")
+#define ENDPOINT \
+  (perspective() == Perspective::IS_SERVER ? "Server: " : " Client: ")
 
 // We want to make sure we delete any closed streams in a safe manner.
 // To avoid deleting a stream in mid-operation, we have a simple shim between
@@ -101,16 +102,16 @@ QuicSession::QuicSession(QuicConnection* connection, const QuicConfig& config)
       visitor_shim_(new VisitorShim(this)),
       config_(config),
       max_open_streams_(config_.MaxStreamsPerConnection()),
-      next_stream_id_(is_server() ? 2 : 5),
+      next_stream_id_(perspective() == Perspective::IS_SERVER ? 2 : 5),
+      write_blocked_streams_(true),
       largest_peer_created_stream_id_(0),
       error_(QUIC_NO_ERROR),
-      flow_controller_(new QuicFlowController(
-          connection_.get(),
-          0,
-          is_server(),
-          kMinimumFlowControlSendWindow,
-          config_.GetInitialSessionFlowControlWindowToSend(),
-          config_.GetInitialSessionFlowControlWindowToSend())),
+      flow_controller_(connection_.get(),
+                       0,
+                       perspective(),
+                       kMinimumFlowControlSendWindow,
+                       config_.GetInitialSessionFlowControlWindowToSend(),
+                       config_.GetInitialSessionFlowControlWindowToSend()),
       goaway_received_(false),
       goaway_sent_(false),
       has_pending_handshake_(false) {
@@ -253,7 +254,7 @@ void QuicSession::OnWindowUpdateFrames(
       DVLOG(1) << ENDPOINT
                << "Received connection level flow control window update with "
                   "byte offset: " << frames[i].byte_offset;
-      if (flow_controller_->UpdateSendWindowOffset(frames[i].byte_offset)) {
+      if (flow_controller_.UpdateSendWindowOffset(frames[i].byte_offset)) {
         connection_window_updated = true;
       }
       continue;
@@ -288,7 +289,7 @@ void QuicSession::OnCanWrite() {
   // cause the connection to request resumption before yielding to other
   // connections.
   size_t num_writes = write_blocked_streams_.NumBlockedStreams();
-  if (flow_controller_->IsBlocked()) {
+  if (flow_controller_.IsBlocked()) {
     // If we are connection level flow control blocked, then only allow the
     // crypto and headers streams to try writing as all other streams will be
     // blocked.
@@ -336,7 +337,7 @@ bool QuicSession::WillingAndAbleToWrite() const {
   // schedule a write if we are not flow control blocked at the connection
   // level.
   return write_blocked_streams_.HasWriteBlockedCryptoOrHeadersStream() ||
-         (!flow_controller_->IsBlocked() &&
+         (!flow_controller_.IsBlocked() &&
           write_blocked_streams_.HasWriteBlockedDataStreams());
 }
 
@@ -412,8 +413,7 @@ void QuicSession::CloseStreamInner(QuicStreamId stream_id,
   // If we haven't received a FIN or RST for this stream, we need to keep track
   // of the how many bytes the stream's flow controller believes it has
   // received, for accurate connection level flow control accounting.
-  if (!stream->HasFinalReceivedByteOffset() &&
-      stream->flow_controller()->IsEnabled()) {
+  if (!stream->HasFinalReceivedByteOffset()) {
     locally_closed_streams_highest_offset_[stream_id] =
         stream->flow_controller()->highest_received_byte_offset();
   }
@@ -435,17 +435,17 @@ void QuicSession::UpdateFlowControlOnFinalReceivedByteOffset(
   DVLOG(1) << ENDPOINT << "Received final byte offset " << final_byte_offset
            << " for stream " << stream_id;
   QuicByteCount offset_diff = final_byte_offset - it->second;
-  if (flow_controller_->UpdateHighestReceivedOffset(
-      flow_controller_->highest_received_byte_offset() + offset_diff)) {
+  if (flow_controller_.UpdateHighestReceivedOffset(
+          flow_controller_.highest_received_byte_offset() + offset_diff)) {
     // If the final offset violates flow control, close the connection now.
-    if (flow_controller_->FlowControlViolation()) {
+    if (flow_controller_.FlowControlViolation()) {
       connection_->SendConnectionClose(
           QUIC_FLOW_CONTROL_RECEIVED_TOO_MUCH_DATA);
       return;
     }
   }
 
-  flow_controller_->AddBytesConsumed(offset_diff);
+  flow_controller_.AddBytesConsumed(offset_diff);
   locally_closed_streams_highest_offset_.erase(it);
 }
 
@@ -461,7 +461,7 @@ void QuicSession::OnConfigNegotiated() {
   connection_->SetFromConfig(config_);
 
   uint32 max_streams = config_.MaxStreamsPerConnection();
-  if (is_server()) {
+  if (perspective() == Perspective::IS_SERVER) {
     // A server should accept a small number of additional streams beyond the
     // limit sent to the client. This helps avoid early connection termination
     // when FIN/RSTs for old streams are lost or arrive out of order.
@@ -516,7 +516,7 @@ void QuicSession::OnNewSessionFlowControlWindow(QuicStreamOffset new_window) {
     return;
   }
 
-  flow_controller_->UpdateSendWindowOffset(new_window);
+  flow_controller_.UpdateSendWindowOffset(new_window);
 }
 
 void QuicSession::OnCryptoHandshakeEvent(CryptoHandshakeEvent event) {
@@ -633,7 +633,7 @@ QuicDataStream* QuicSession::GetIncomingDataStream(QuicStreamId stream_id) {
       return nullptr;
     }
     if (largest_peer_created_stream_id_ == 0) {
-      if (is_server()) {
+      if (perspective() == Perspective::IS_SERVER) {
         largest_peer_created_stream_id_ = 3;
       } else {
         largest_peer_created_stream_id_ = 1;
@@ -716,11 +716,6 @@ bool QuicSession::HasDataToWrite() const {
          connection_->HasQueuedData();
 }
 
-bool QuicSession::GetSSLInfo(SSLInfo* ssl_info) const {
-  NOTIMPLEMENTED();
-  return false;
-}
-
 void QuicSession::PostProcessAfterData() {
   STLDeleteElements(&closed_streams_);
 
@@ -732,7 +727,7 @@ void QuicSession::PostProcessAfterData() {
 }
 
 bool QuicSession::IsConnectionFlowControlBlocked() const {
-  return flow_controller_->IsBlocked();
+  return flow_controller_.IsBlocked();
 }
 
 bool QuicSession::IsStreamFlowControlBlocked() {

@@ -23,14 +23,14 @@
 #include "net/base/address_list.h"
 #include "net/base/io_buffer.h"
 #include "net/base/net_errors.h"
-#include "net/base/net_log.h"
-#include "net/base/net_log_unittest.h"
 #include "net/base/test_completion_callback.h"
 #include "net/base/test_data_directory.h"
 #include "net/cert/mock_cert_verifier.h"
 #include "net/cert/test_root_certs.h"
 #include "net/dns/host_resolver.h"
 #include "net/http/transport_security_state.h"
+#include "net/log/net_log.h"
+#include "net/log/net_log_unittest.h"
 #include "net/socket/client_socket_factory.h"
 #include "net/socket/client_socket_handle.h"
 #include "net/socket/socket_test_util.h"
@@ -184,7 +184,7 @@ class SSLClientSocketOpenSSLClientAuthTest : public PlatformTest {
   scoped_ptr<SpawnedTestServer> test_server_;
   AddressList addr_;
   TestCompletionCallback callback_;
-  CapturingNetLog log_;
+  TestNetLog log_;
   scoped_ptr<StreamSocket> transport_;
   scoped_ptr<SSLClientSocket> sock_;
 };

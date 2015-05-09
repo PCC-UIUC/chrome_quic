@@ -48,15 +48,17 @@ typedef std::map<QuicTag, std::string> QuicTagValueMap;
 // QuicPriority is uint32. Use SpdyPriority when we change the QUIC_VERSION.
 typedef uint32 QuicPriority;
 
-// TODO(rch): Consider Quic specific names for these constants.
 // Default and initial maximum size in bytes of a QUIC packet.
 const QuicByteCount kDefaultMaxPacketSize = 1350;
+// Default initial maximum size in bytes of a QUIC packet for servers.
+const QuicByteCount kDefaultServerMaxPacketSize = 1000;
 // The maximum packet size of any QUIC packet, based on ethernet's max size,
 // minus the IP and UDP headers. IPv6 has a 40 byte header, UPD adds an
 // additional 8 bytes.  This is a total overhead of 48 bytes.  Ethernet's
 // max packet size is 1500 bytes,  1500 - 48 = 1452.
 const QuicByteCount kMaxPacketSize = 1452;
-// Default maximum packet size used in Linux TCP implementations.
+// Default maximum packet size used in the Linux TCP implementation.
+// Used in QUIC for congestion window computations in bytes.
 const QuicByteCount kDefaultTCPMSS = 1460;
 
 // We match SPDY's use of 32 when secure (since we'd compete with SPDY).
@@ -78,6 +80,10 @@ const QuicByteCount kDefaultSocketReceiveBuffer = 256 * 1024;
 // Minimum size of the socket receive buffer in bytes.
 // Smaller values are ignored.
 const QuicByteCount kMinSocketReceiveBuffer = 16 * 1024;
+
+// Fraction of the receive buffer that can be used for encrypted bytes.
+// Allows a 5% overhead for IP and UDP framing, as well as ack only packets.
+static const float kUsableRecieveBufferFraction = 0.95f;
 
 // Don't allow a client to suggest an RTT shorter than 10ms.
 const uint32 kMinInitialRoundTripTimeUs = 10 * kNumMicrosPerMilli;
@@ -105,8 +111,6 @@ const size_t kStartOfHashData = 0;
 
 // Limit on the delta between stream IDs.
 const QuicStreamId kMaxStreamIdDelta = 200;
-// Limit on the delta between header IDs.
-const QuicHeaderId kMaxHeaderIdDelta = 200;
 
 // Reserved ID for the crypto stream.
 const QuicStreamId kCryptoStreamId = 1;
@@ -189,6 +193,11 @@ enum IsHandshake {
   NOT_HANDSHAKE,
   IS_HANDSHAKE
 };
+
+enum class Perspective { IS_SERVER, IS_CLIENT };
+
+NET_EXPORT_PRIVATE std::ostream& operator<<(std::ostream& os,
+                                            const Perspective& s);
 
 // Indicates FEC protection level for data being written.
 enum FecProtection {
@@ -311,6 +320,8 @@ enum QuicVersion {
 
   QUIC_VERSION_23 = 23,  // Timestamp in the ack frame.
   QUIC_VERSION_24 = 24,  // SPDY/4 header compression.
+  QUIC_VERSION_25 = 25,  // SPDY/4 header keys, and removal of error_details
+                         // from QuicRstStreamFrame
 };
 
 // This vector contains QUIC versions which we currently support.
@@ -320,7 +331,8 @@ enum QuicVersion {
 //
 // IMPORTANT: if you are adding to this list, follow the instructions at
 // http://sites/quic/adding-and-removing-versions
-static const QuicVersion kSupportedQuicVersions[] = {QUIC_VERSION_24,
+static const QuicVersion kSupportedQuicVersions[] = {QUIC_VERSION_25,
+                                                     QUIC_VERSION_24,
                                                      QUIC_VERSION_23};
 
 typedef std::vector<QuicVersion> QuicVersionVector;
@@ -513,6 +525,10 @@ enum QuicErrorCode {
   QUIC_TOO_MANY_OUTSTANDING_SENT_PACKETS = 68,
   // The connection has too many outstanding received packets.
   QUIC_TOO_MANY_OUTSTANDING_RECEIVED_PACKETS = 69,
+  // The quic connection job to load server config is cancelled.
+  QUIC_CONNECTION_CANCELLED = 70,
+  // Disabled QUIC because of high packet loss rate.
+  QUIC_BAD_PACKET_LOSS_RATE = 71,
 
   // Crypto errors.
 
@@ -570,7 +586,7 @@ enum QuicErrorCode {
   QUIC_VERSION_NEGOTIATION_MISMATCH = 55,
 
   // No error. Used as bound while iterating.
-  QUIC_LAST_ERROR = 70,
+  QUIC_LAST_ERROR = 72,
 };
 
 struct NET_EXPORT_PRIVATE QuicPacketPublicHeader {
@@ -587,6 +603,9 @@ struct NET_EXPORT_PRIVATE QuicPacketPublicHeader {
   QuicSequenceNumberLength sequence_number_length;
   QuicVersionVector versions;
 };
+
+// An integer which cannot be a packet sequence number.
+const QuicPacketSequenceNumber kInvalidPacketSequenceNumber = 0;
 
 // Header for Data or FEC packets.
 struct NET_EXPORT_PRIVATE QuicPacketHeader {
@@ -659,11 +678,6 @@ struct NET_EXPORT_PRIVATE QuicStreamFrame {
   bool fin;
   QuicStreamOffset offset;  // Location of this data in the stream.
   IOVector data;
-
-  // TODO(rjshade): Remove with FLAGS_quic_attach_ack_notifiers_to_packets.
-  // If this is set, then when this packet is ACKed the AckNotifier will be
-  // informed.
-  QuicAckNotifier* notifier;
 };
 
 // TODO(ianswett): Re-evaluate the trade-offs of hash_set vs set when framing
@@ -747,7 +761,9 @@ void NET_EXPORT_PRIVATE InsertMissingPacketsBetween(
 // (Reno and Cubic are the classic example for that).
 enum CongestionControlType {
   kCubic,
+  kCubicBytes,
   kReno,
+  kRenoBytes,
   kBBR,
 };
 
@@ -767,6 +783,7 @@ struct NET_EXPORT_PRIVATE QuicRstStreamFrame {
 
   QuicStreamId stream_id;
   QuicRstStreamErrorCode error_code;
+  // Only used in versions <= QUIC_VERSION_24.
   std::string error_details;
 
   // Used to update flow control windows. On termination of a stream, both
@@ -918,48 +935,22 @@ class NET_EXPORT_PRIVATE QuicData {
 
 class NET_EXPORT_PRIVATE QuicPacket : public QuicData {
  public:
-  static QuicPacket* NewDataPacket(
-      char* buffer,
-      size_t length,
-      bool owns_buffer,
-      QuicConnectionIdLength connection_id_length,
-      bool includes_version,
-      QuicSequenceNumberLength sequence_number_length) {
-    return new QuicPacket(buffer, length, owns_buffer, connection_id_length,
-                          includes_version, sequence_number_length, false);
-  }
-
-  static QuicPacket* NewFecPacket(
-      char* buffer,
-      size_t length,
-      bool owns_buffer,
-      QuicConnectionIdLength connection_id_length,
-      bool includes_version,
-      QuicSequenceNumberLength sequence_number_length) {
-    return new QuicPacket(buffer, length, owns_buffer, connection_id_length,
-                          includes_version, sequence_number_length, true);
-  }
+  QuicPacket(char* buffer,
+             size_t length,
+             bool owns_buffer,
+             QuicConnectionIdLength connection_id_length,
+             bool includes_version,
+             QuicSequenceNumberLength sequence_number_length);
 
   base::StringPiece FecProtectedData() const;
   base::StringPiece AssociatedData() const;
   base::StringPiece BeforePlaintext() const;
   base::StringPiece Plaintext() const;
 
-  bool is_fec_packet() const { return is_fec_packet_; }
-
   char* mutable_data() { return buffer_; }
 
  private:
-  QuicPacket(char* buffer,
-             size_t length,
-             bool owns_buffer,
-             QuicConnectionIdLength connection_id_length,
-             bool includes_version,
-             QuicSequenceNumberLength sequence_number_length,
-             bool is_fec_packet);
-
   char* buffer_;
-  const bool is_fec_packet_;
   const QuicConnectionIdLength connection_id_length_;
   const bool includes_version_;
   const QuicSequenceNumberLength sequence_number_length_;
@@ -988,7 +979,7 @@ class NET_EXPORT_PRIVATE QuicEncryptedPacket : public QuicData {
 
 class NET_EXPORT_PRIVATE RetransmittableFrames {
  public:
-  RetransmittableFrames();
+  explicit RetransmittableFrames(EncryptionLevel level);
   ~RetransmittableFrames();
 
   // Allocates a local copy of the referenced StringPiece has QuicStreamFrame
@@ -997,20 +988,22 @@ class NET_EXPORT_PRIVATE RetransmittableFrames {
   const QuicFrame& AddStreamFrame(QuicStreamFrame* stream_frame);
   // Takes ownership of the frame inside |frame|.
   const QuicFrame& AddNonStreamFrame(const QuicFrame& frame);
+  // Removes all stream frames associated with |stream_id|.
+  void RemoveFramesForStream(QuicStreamId stream_id);
+
   const QuicFrames& frames() const { return frames_; }
 
   IsHandshake HasCryptoHandshake() const {
     return has_crypto_handshake_;
   }
 
-  void set_encryption_level(EncryptionLevel level);
   EncryptionLevel encryption_level() const {
     return encryption_level_;
   }
 
  private:
   QuicFrames frames_;
-  EncryptionLevel encryption_level_;
+  const EncryptionLevel encryption_level_;
   IsHandshake has_crypto_handshake_;
   // Data referenced by the StringPiece of a QuicStreamFrame.
   std::vector<std::string*> stream_data_;
@@ -1021,19 +1014,20 @@ class NET_EXPORT_PRIVATE RetransmittableFrames {
 struct NET_EXPORT_PRIVATE SerializedPacket {
   SerializedPacket(QuicPacketSequenceNumber sequence_number,
                    QuicSequenceNumberLength sequence_number_length,
-                   QuicPacket* packet,
+                   QuicEncryptedPacket* packet,
                    QuicPacketEntropyHash entropy_hash,
                    RetransmittableFrames* retransmittable_frames);
   ~SerializedPacket();
 
   QuicPacketSequenceNumber sequence_number;
   QuicSequenceNumberLength sequence_number_length;
-  QuicPacket* packet;
+  QuicEncryptedPacket* packet;
   QuicPacketEntropyHash entropy_hash;
   RetransmittableFrames* retransmittable_frames;
+  bool is_fec_packet;
 
   // Optional notifiers which will be informed when this packet has been ACKed.
-  base::hash_set<QuicAckNotifier*> notifiers;
+  std::list<QuicAckNotifier*> notifiers;
 };
 
 struct NET_EXPORT_PRIVATE TransmissionInfo {
@@ -1045,13 +1039,13 @@ struct NET_EXPORT_PRIVATE TransmissionInfo {
   TransmissionInfo(RetransmittableFrames* retransmittable_frames,
                    QuicSequenceNumberLength sequence_number_length,
                    TransmissionType transmission_type,
-                   QuicTime sent_time);
+                   QuicTime sent_time,
+                   QuicByteCount bytes_sent,
+                   bool is_fec_packet);
 
   RetransmittableFrames* retransmittable_frames;
   QuicSequenceNumberLength sequence_number_length;
-  // Zero when the packet is serialized, non-zero once it's sent.
   QuicTime sent_time;
-  // Zero when the packet is serialized, non-zero once it's sent.
   QuicByteCount bytes_sent;
   QuicPacketCount nack_count;
   // Reason why this packet was transmitted.

@@ -46,7 +46,9 @@ QuicPacketGenerator::QuicPacketGenerator(QuicConnectionId connection_id,
       fec_timeout_(QuicTime::Delta::Zero()),
       should_fec_protect_(false),
       should_send_ack_(false),
-      should_send_stop_waiting_(false) {
+      should_send_stop_waiting_(false),
+      ack_queued_(false),
+      stop_waiting_queued_(false) {
 }
 
 QuicPacketGenerator::~QuicPacketGenerator() {
@@ -101,23 +103,18 @@ void QuicPacketGenerator::OnRttChange(QuicTime::Delta rtt) {
 }
 
 void QuicPacketGenerator::SetShouldSendAck(bool also_send_stop_waiting) {
-  if (pending_ack_frame_ != nullptr) {
+  if (ack_queued_) {
     // Ack already queued, nothing to do.
     return;
   }
 
-  if (also_send_stop_waiting && pending_stop_waiting_frame_ != nullptr) {
+  if (also_send_stop_waiting && stop_waiting_queued_) {
     LOG(DFATAL) << "Should only ever be one pending stop waiting frame.";
     return;
   }
 
   should_send_ack_ = true;
   should_send_stop_waiting_ = also_send_stop_waiting;
-  SendQueuedFrames(false);
-}
-
-void QuicPacketGenerator::SetShouldSendStopWaiting() {
-  should_send_stop_waiting_ = true;
   SendQueuedFrames(false);
 }
 
@@ -175,12 +172,8 @@ QuicConsumedData QuicPacketGenerator::ConsumeData(
     ++frames_created;
 
     // We want to track which packet this stream frame ends up in.
-    if (FLAGS_quic_attach_ack_notifiers_to_packets) {
-      if (notifier != nullptr) {
-        ack_notifiers_.insert(notifier);
-      }
-    } else {
-      frame.stream_frame->notifier = notifier;
+    if (notifier != nullptr) {
+      ack_notifiers_.push_back(notifier);
     }
 
     if (!AddFrame(frame)) {
@@ -227,7 +220,7 @@ QuicConsumedData QuicPacketGenerator::ConsumeData(
 
   // Try to close FEC group since we've either run out of data to send or we're
   // blocked. If not in batch mode, force close the group.
-  MaybeSendFecPacketAndCloseGroup(/*flush=*/false);
+  MaybeSendFecPacketAndCloseGroup(/*force=*/false);
 
   DCHECK(InBatchMode() || !packet_creator_.HasPendingFrames());
   return QuicConsumedData(total_bytes_consumed, fin_consumed);
@@ -317,7 +310,7 @@ void QuicPacketGenerator::OnFecTimeout() {
   // Flush out any pending frames in the generator and the creator, and then
   // send out FEC packet.
   SendQueuedFrames(true);
-  MaybeSendFecPacketAndCloseGroup(/*flush=*/true);
+  MaybeSendFecPacketAndCloseGroup(/*force=*/true);
 }
 
 QuicTime::Delta QuicPacketGenerator::GetFecTimeout(
@@ -360,19 +353,21 @@ bool QuicPacketGenerator::HasPendingFrames() const {
 
 bool QuicPacketGenerator::AddNextPendingFrame() {
   if (should_send_ack_) {
-    pending_ack_frame_.reset(delegate_->CreateAckFrame());
+    delegate_->PopulateAckFrame(&pending_ack_frame_);
+    ack_queued_ = true;
     // If we can't this add the frame now, then we still need to do so later.
-    should_send_ack_ = !AddFrame(QuicFrame(pending_ack_frame_.get()));
+    should_send_ack_ = !AddFrame(QuicFrame(&pending_ack_frame_));
     // Return success if we have cleared out this flag (i.e., added the frame).
     // If we still need to send, then the frame is full, and we have failed.
     return !should_send_ack_;
   }
 
   if (should_send_stop_waiting_) {
-    pending_stop_waiting_frame_.reset(delegate_->CreateStopWaitingFrame());
+    delegate_->PopulateStopWaitingFrame(&pending_stop_waiting_frame_);
+    stop_waiting_queued_ = true;
     // If we can't this add the frame now, then we still need to do so later.
     should_send_stop_waiting_ =
-        !AddFrame(QuicFrame(pending_stop_waiting_frame_.get()));
+        !AddFrame(QuicFrame(&pending_stop_waiting_frame_));
     // Return success if we have cleared out this flag (i.e., added the frame).
     // If we still need to send, then the frame is full, and we have failed.
     return !should_send_stop_waiting_;
@@ -401,17 +396,15 @@ void QuicPacketGenerator::SerializeAndSendPacket() {
   DCHECK(serialized_packet.packet);
 
   // There may be AckNotifiers interested in this packet.
-  if (FLAGS_quic_attach_ack_notifiers_to_packets) {
-    serialized_packet.notifiers.swap(ack_notifiers_);
-    ack_notifiers_.clear();
-  }
+  serialized_packet.notifiers.swap(ack_notifiers_);
+  ack_notifiers_.clear();
 
   delegate_->OnSerializedPacket(serialized_packet);
-  MaybeSendFecPacketAndCloseGroup(/*flush=*/false);
+  MaybeSendFecPacketAndCloseGroup(/*force=*/false);
 
-  // The packet has now been serialized, safe to delete pending frames.
-  pending_ack_frame_.reset();
-  pending_stop_waiting_frame_.reset();
+  // The packet has now been serialized, so the frames are no longer queued.
+  ack_queued_ = false;
+  stop_waiting_queued_ = false;
 }
 
 void QuicPacketGenerator::StopSendingVersion() {
@@ -427,7 +420,7 @@ QuicByteCount QuicPacketGenerator::max_packet_length() const {
 }
 
 void QuicPacketGenerator::set_max_packet_length(QuicByteCount length) {
-  packet_creator_.set_max_packet_length(length);
+  packet_creator_.SetMaxPacketLength(length);
 }
 
 QuicEncryptedPacket* QuicPacketGenerator::SerializeVersionNegotiationPacket(
@@ -436,7 +429,7 @@ QuicEncryptedPacket* QuicPacketGenerator::SerializeVersionNegotiationPacket(
 }
 
 SerializedPacket QuicPacketGenerator::ReserializeAllFrames(
-    const QuicFrames& frames,
+    const RetransmittableFrames& frames,
     QuicSequenceNumberLength original_length) {
   return packet_creator_.ReserializeAllFrames(frames, original_length);
 }
@@ -463,6 +456,11 @@ void QuicPacketGenerator::SetConnectionIdLength(uint32 length) {
 
 void QuicPacketGenerator::set_encryption_level(EncryptionLevel level) {
   packet_creator_.set_encryption_level(level);
+}
+
+void QuicPacketGenerator::SetEncrypter(EncryptionLevel level,
+                                       QuicEncrypter* encrypter) {
+  packet_creator_.SetEncrypter(level, encrypter);
 }
 
 }  // namespace net

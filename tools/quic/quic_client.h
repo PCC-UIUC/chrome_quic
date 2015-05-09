@@ -97,8 +97,8 @@ class QuicClient : public EpollCallbackInterface,
 
   // Sends a request simple GET for each URL in |args|, and then waits for
   // each to complete.
-  void SendRequestsAndWaitForResponse(const
-      base::CommandLine::StringVector& args);
+  void SendRequestsAndWaitForResponse(
+      const std::vector<std::string>& url_list);
 
   // Returns a newly created QuicSpdyClientStream, owned by the
   // QuicClient.
@@ -207,7 +207,7 @@ class QuicClient : public EpollCallbackInterface,
   // A packet writer factory that always returns the same writer
   class DummyPacketWriterFactory : public QuicConnection::PacketWriterFactory {
    public:
-    DummyPacketWriterFactory(QuicPacketWriter* writer);
+    explicit DummyPacketWriterFactory(QuicPacketWriter* writer);
     ~DummyPacketWriterFactory() override;
 
     QuicPacketWriter* Create(QuicConnection* connection) const override;

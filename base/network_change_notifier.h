@@ -5,6 +5,8 @@
 #ifndef NET_BASE_NETWORK_CHANGE_NOTIFIER_H_
 #define NET_BASE_NETWORK_CHANGE_NOTIFIER_H_
 
+#include <vector>
+
 #include "base/basictypes.h"
 #include "base/observer_list_threadsafe.h"
 #include "base/time/time.h"
@@ -17,6 +19,8 @@ namespace net {
 struct DnsConfig;
 class HistogramWatcher;
 class NetworkChangeNotifierFactory;
+struct NetworkInterface;
+typedef std::vector<NetworkInterface> NetworkInterfaceList;
 class URLRequest;
 
 #if defined(OS_LINUX)
@@ -37,6 +41,9 @@ class NET_EXPORT NetworkChangeNotifier {
   //
   // A Java counterpart will be generated for this enum.
   // GENERATED_JAVA_ENUM_PACKAGE: org.chromium.net
+  //
+  // New enum values should only be added to the end of the enum and no values
+  // should be modified or reused, as this is reported via UMA.
   enum ConnectionType {
     CONNECTION_UNKNOWN = 0,  // A connection exists, but its type is unknown.
                              // Also used as a default value.
@@ -128,6 +135,9 @@ class NET_EXPORT NetworkChangeNotifier {
     // Will be called when the DNS settings of the system may have changed.
     // Use GetDnsConfig to obtain the current settings.
     virtual void OnDNSChanged() = 0;
+    // Will be called when DNS settings of the system have been loaded.
+    // Use GetDnsConfig to obtain the current settings.
+    virtual void OnInitialDNSConfigRead();
 
    protected:
     DNSObserver() {}
@@ -258,6 +268,13 @@ class NET_EXPORT NetworkChangeNotifier {
   // current connection is cellular.
   static bool IsConnectionCellular(ConnectionType type);
 
+  // Gets the current connection type based on |interfaces|. Returns
+  // CONNECTION_NONE if there are no interfaces, CONNECTION_UNKNOWN if two
+  // interfaces have different connection types or the connection type of all
+  // interfaces if they have the same interface type.
+  static ConnectionType ConnectionTypeFromInterfaceList(
+      const NetworkInterfaceList& interfaces);
+
   // Like Create(), but for use in tests.  The mock object doesn't monitor any
   // events, it merely rebroadcasts notifications when requested.
   static NetworkChangeNotifier* CreateMock();
@@ -291,6 +308,7 @@ class NET_EXPORT NetworkChangeNotifier {
   static void NotifyObserversOfConnectionTypeChangeForTests(
       ConnectionType type);
   static void NotifyObserversOfNetworkChangeForTests(ConnectionType type);
+  static void NotifyObserversOfInitialDNSConfigReadForTests();
 
   // Enable or disable notifications from the host. After setting to true, be
   // sure to pump the RunLoop until idle to finish any preexisting
@@ -386,11 +404,15 @@ class NET_EXPORT NetworkChangeNotifier {
   static void NotifyObserversOfIPAddressChange();
   static void NotifyObserversOfConnectionTypeChange();
   static void NotifyObserversOfDNSChange();
+  static void NotifyObserversOfInitialDNSConfigRead();
   static void NotifyObserversOfNetworkChange(ConnectionType type);
   static void NotifyObserversOfMaxBandwidthChange(double max_bandwidth_mbps);
 
-  // Stores |config| in NetworkState and notifies observers.
+  // Stores |config| in NetworkState and notifies OnDNSChanged observers.
   static void SetDnsConfig(const DnsConfig& config);
+  // Stores |config| in NetworkState and notifies OnInitialDNSConfigRead
+  // observers.
+  static void SetInitialDnsConfig(const DnsConfig& config);
 
  private:
   friend class HostResolverImplDnsTest;
@@ -404,6 +426,7 @@ class NET_EXPORT NetworkChangeNotifier {
   void NotifyObserversOfIPAddressChangeImpl();
   void NotifyObserversOfConnectionTypeChangeImpl(ConnectionType type);
   void NotifyObserversOfDNSChangeImpl();
+  void NotifyObserversOfInitialDNSConfigReadImpl();
   void NotifyObserversOfNetworkChangeImpl(ConnectionType type);
   void NotifyObserversOfMaxBandwidthChangeImpl(double max_bandwidth_mbps);
 

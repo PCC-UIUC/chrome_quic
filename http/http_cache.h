@@ -72,11 +72,6 @@ class NET_EXPORT HttpCache : public HttpTransactionFactory,
   enum Mode {
     // Normal mode just behaves like a standard web cache.
     NORMAL = 0,
-    // Record mode caches everything for purposes of offline playback.
-    RECORD,
-    // Playback mode replays from a cache without considering any
-    // standard invalidations.
-    PLAYBACK,
     // Disables reads and writes from the cache.
     // Equivalent to setting LOAD_DISABLE_CACHE on every request.
     DISABLE
@@ -133,7 +128,7 @@ class NET_EXPORT HttpCache : public HttpTransactionFactory,
 
   // The disk cache is initialized lazily (by CreateTransaction) in this case.
   // The HttpCache takes ownership of the |backend_factory|.
-  HttpCache(const net::HttpNetworkSession::Params& params,
+  HttpCache(const HttpNetworkSession::Params& params,
             BackendFactory* backend_factory);
 
   // The disk cache is initialized lazily (by CreateTransaction) in this case.
@@ -162,7 +157,7 @@ class NET_EXPORT HttpCache : public HttpTransactionFactory,
   // |callback| will be notified when the operation completes. The pointer that
   // receives the |backend| must remain valid until the operation completes.
   int GetBackend(disk_cache::Backend** backend,
-                 const net::CompletionCallback& callback);
+                 const CompletionCallback& callback);
 
   // Returns the current backend (can be NULL).
   disk_cache::Backend* GetCurrentBackend() const;
@@ -203,9 +198,6 @@ class NET_EXPORT HttpCache : public HttpTransactionFactory,
   // Called whenever an external cache in the system reuses the resource
   // referred to by |url| and |http_method|.
   void OnExternalCacheHit(const GURL& url, const std::string& http_method);
-
-  // Initializes the Infinite Cache, if selected by the field trial.
-  void InitializeInfiniteCache(const base::FilePath& path);
 
   // Causes all transactions created after this point to effectively bypass
   // the cache lock whenever there is lock contention.
@@ -293,7 +285,7 @@ class NET_EXPORT HttpCache : public HttpTransactionFactory,
   // Creates the |backend| object and notifies the |callback| when the operation
   // completes. Returns an error code.
   int CreateBackend(disk_cache::Backend** backend,
-                    const net::CompletionCallback& callback);
+                    const CompletionCallback& callback);
 
   // Makes sure that the backend creation is complete before allowing the
   // provided transaction to use the object. Returns an error code.  |trans|

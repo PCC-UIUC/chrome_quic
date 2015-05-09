@@ -15,7 +15,6 @@
 #include "base/strings/string_piece.h"
 #include "crypto/sha2.h"
 #include "net/base/net_errors.h"
-#include "net/base/net_log.h"
 #include "net/base/test_completion_callback.h"
 #include "net/base/test_data_directory.h"
 #include "net/cert/asn1_util.h"
@@ -25,6 +24,7 @@
 #include "net/cert/x509_cert_types.h"
 #include "net/cert/x509_certificate.h"
 #include "net/http/http_util.h"
+#include "net/log/net_log.h"
 #include "net/ssl/ssl_info.h"
 #include "net/test/cert_test_util.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -80,6 +80,9 @@ TEST_F(TransportSecurityStateTest, SimpleMatches) {
   bool include_subdomains = false;
   state.AddHSTS("yahoo.com", expiry, include_subdomains);
   EXPECT_TRUE(state.ShouldUpgradeToSSL("yahoo.com"));
+  EXPECT_TRUE(state.ShouldSSLErrorsBeFatal("yahoo.com"));
+  EXPECT_FALSE(state.ShouldUpgradeToSSL("foo.yahoo.com"));
+  EXPECT_FALSE(state.ShouldSSLErrorsBeFatal("foo.yahoo.com"));
 }
 
 TEST_F(TransportSecurityStateTest, MatchesCase1) {
@@ -140,6 +143,48 @@ TEST_F(TransportSecurityStateTest, SubdomainMatches) {
   EXPECT_TRUE(state.ShouldUpgradeToSSL("foo.bar.baz.yahoo.com"));
   EXPECT_FALSE(state.ShouldUpgradeToSSL("com"));
   EXPECT_FALSE(state.ShouldUpgradeToSSL("notyahoo.com"));
+}
+
+// Tests that a more-specific HSTS or HPKP rule overrides a less-specific rule
+// with it, regardless of the includeSubDomains bit. This is a regression test
+// for https://crbug.com/469957.
+TEST_F(TransportSecurityStateTest, SubdomainCarveout) {
+  TransportSecurityState state;
+  const base::Time current_time(base::Time::Now());
+  const base::Time expiry = current_time + base::TimeDelta::FromSeconds(1000);
+  const base::Time older = current_time - base::TimeDelta::FromSeconds(1000);
+
+  state.AddHSTS("example1.com", expiry, true);
+  state.AddHSTS("foo.example1.com", expiry, false);
+
+  state.AddHPKP("example2.com", expiry, true, GetSampleSPKIHashes());
+  state.AddHPKP("foo.example2.com", expiry, false, GetSampleSPKIHashes());
+
+  EXPECT_TRUE(state.ShouldUpgradeToSSL("example1.com"));
+  EXPECT_TRUE(state.ShouldUpgradeToSSL("foo.example1.com"));
+
+  // The foo.example1.com rule overrides the example1.com rule, so
+  // bar.foo.example1.com has no HSTS state.
+  EXPECT_FALSE(state.ShouldUpgradeToSSL("bar.foo.example1.com"));
+  EXPECT_FALSE(state.ShouldSSLErrorsBeFatal("bar.foo.example1.com"));
+
+  EXPECT_TRUE(state.HasPublicKeyPins("example2.com"));
+  EXPECT_TRUE(state.HasPublicKeyPins("foo.example2.com"));
+
+  // The foo.example2.com rule overrides the example1.com rule, so
+  // bar.foo.example2.com has no HPKP state.
+  EXPECT_FALSE(state.HasPublicKeyPins("bar.foo.example2.com"));
+  EXPECT_FALSE(state.ShouldSSLErrorsBeFatal("bar.foo.example2.com"));
+
+  // Expire the foo.example*.com rules.
+  state.AddHSTS("foo.example1.com", older, false);
+  state.AddHPKP("foo.example2.com", older, false, GetSampleSPKIHashes());
+
+  // Now the base example*.com rules apply to bar.foo.example*.com.
+  EXPECT_TRUE(state.ShouldUpgradeToSSL("bar.foo.example1.com"));
+  EXPECT_TRUE(state.ShouldSSLErrorsBeFatal("bar.foo.example1.com"));
+  EXPECT_TRUE(state.HasPublicKeyPins("bar.foo.example2.com"));
+  EXPECT_TRUE(state.ShouldSSLErrorsBeFatal("bar.foo.example2.com"));
 }
 
 TEST_F(TransportSecurityStateTest, FatalSSLErrors) {

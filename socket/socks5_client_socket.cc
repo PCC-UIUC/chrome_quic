@@ -7,13 +7,13 @@
 #include "base/basictypes.h"
 #include "base/callback_helpers.h"
 #include "base/compiler_specific.h"
-#include "base/debug/trace_event.h"
 #include "base/format_macros.h"
 #include "base/strings/string_util.h"
 #include "base/sys_byteorder.h"
+#include "base/trace_event/trace_event.h"
 #include "net/base/io_buffer.h"
-#include "net/base/net_log.h"
 #include "net/base/net_util.h"
+#include "net/log/net_log.h"
 #include "net/socket/client_socket_handle.h"
 
 namespace net {

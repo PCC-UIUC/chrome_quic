@@ -16,7 +16,6 @@
 #include "net/quic/congestion_control/loss_detection_interface.h"
 #include "net/quic/congestion_control/rtt_stats.h"
 #include "net/quic/congestion_control/send_algorithm_interface.h"
-#include "net/quic/crypto/cached_network_parameters.h"
 #include "net/quic/quic_ack_notifier_manager.h"
 #include "net/quic/quic_protocol.h"
 #include "net/quic/quic_sustained_bandwidth_recorder.h"
@@ -93,7 +92,7 @@ class NET_EXPORT_PRIVATE QuicSentPacketManager {
         QuicSequenceNumberLength sequence_number_length;
   };
 
-  QuicSentPacketManager(bool is_server,
+  QuicSentPacketManager(Perspective perspective,
                         const QuicClock* clock,
                         QuicConnectionStats* stats,
                         CongestionControlType congestion_control_type,
@@ -106,7 +105,8 @@ class NET_EXPORT_PRIVATE QuicSentPacketManager {
   // Pass the CachedNetworkParameters to the send algorithm.
   // Returns true if this changes the initial connection state.
   bool ResumeConnectionState(
-      const CachedNetworkParameters& cached_network_params);
+      const CachedNetworkParameters& cached_network_params,
+      bool max_bandwidth_resumption);
 
   void SetNumOpenStreams(size_t num_streams);
 
@@ -215,6 +215,9 @@ class NET_EXPORT_PRIVATE QuicSentPacketManager {
   // Called by the connection every time it receives a serialized packet.
   void OnSerializedPacket(const SerializedPacket& serialized_packet);
 
+  // No longer retransmit data for |stream_id|.
+  void CancelRetransmissionsForStream(QuicStreamId stream_id);
+
   // Enables pacing if it has not already been enabled.
   void EnablePacing();
 
@@ -238,10 +241,12 @@ class NET_EXPORT_PRIVATE QuicSentPacketManager {
     network_change_visitor_ = visitor;
   }
 
+  // Used in Chromium, but not in the server.
   size_t consecutive_rto_count() const {
     return consecutive_rto_count_;
   }
 
+  // Used in Chromium, but not in the server.
   size_t consecutive_tlp_count() const {
     return consecutive_tlp_count_;
   }
@@ -267,12 +272,6 @@ class NET_EXPORT_PRIVATE QuicSentPacketManager {
   typedef linked_hash_map<QuicPacketSequenceNumber,
                           TransmissionType> PendingRetransmissionMap;
 
-  // Called when a packet is retransmitted with a new sequence number.
-  // Replaces the old entry in the unacked packet map with the new
-  // sequence number.
-  void OnRetransmittedPacket(QuicPacketSequenceNumber old_sequence_number,
-                             QuicPacketSequenceNumber new_sequence_number);
-
   // Updates the least_packet_awaited_by_peer.
   void UpdatePacketInformationReceivedByPeer(const QuicAckFrame& ack_frame);
 
@@ -288,9 +287,6 @@ class NET_EXPORT_PRIVATE QuicSentPacketManager {
   // Retransmits two packets for an RTO and removes any non-retransmittable
   // packets from flight.
   void RetransmitRtoPackets();
-
-  // Retransmits all the packets and abandons by invoking a full RTO.
-  void RetransmitAllPackets();
 
   // Returns the timer for retransmitting crypto handshake packets.
   const QuicTime::Delta GetCryptoRetransmissionDelay() const;
@@ -359,8 +355,8 @@ class NET_EXPORT_PRIVATE QuicSentPacketManager {
   // Pending retransmissions which have not been packetized and sent yet.
   PendingRetransmissionMap pending_retransmissions_;
 
-  // Tracks if the connection was created by the server.
-  bool is_server_;
+  // Tracks if the connection was created by the server or the client.
+  Perspective perspective_;
 
   // An AckNotifier can register to be informed when ACKs have been received for
   // all packets that a given block of data was sent in. The AckNotifierManager
@@ -397,6 +393,9 @@ class NET_EXPORT_PRIVATE QuicSentPacketManager {
   // Maximum number of tail loss probes to send before firing an RTO.
   size_t max_tail_loss_probes_;
   bool using_pacing_;
+  // If true, use the new RTO with loss based CWND reduction instead of the send
+  // algorithms's OnRetransmissionTimeout to reduce the congestion window.
+  bool use_new_rto_;
 
   // Vectors packets acked and lost as a result of the last congestion event.
   SendAlgorithmInterface::CongestionVector packets_acked_;

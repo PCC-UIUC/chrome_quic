@@ -11,7 +11,7 @@
 #include "crypto/ghash.h"
 #include "crypto/scoped_nss_types.h"
 
-#if defined(USE_NSS)
+#if defined(USE_NSS_CERTS)
 #include <dlfcn.h>
 #endif
 
@@ -40,7 +40,7 @@ class GcmSupportChecker {
   friend struct base::DefaultLazyInstanceTraits<GcmSupportChecker>;
 
   GcmSupportChecker() {
-#if !defined(USE_NSS)
+#if !defined(USE_NSS_CERTS)
     // Using a bundled version of NSS that is guaranteed to have this symbol.
     pk11_decrypt_func_ = PK11_Decrypt;
 #else
@@ -219,7 +219,7 @@ Aes128Gcm12Decrypter::Aes128Gcm12Decrypter()
 Aes128Gcm12Decrypter::~Aes128Gcm12Decrypter() {}
 
 void Aes128Gcm12Decrypter::FillAeadParams(StringPiece nonce,
-                                          StringPiece associated_data,
+                                          const StringPiece& associated_data,
                                           size_t auth_tag_size,
                                           AeadParams* aead_params) const {
   aead_params->len = sizeof(aead_params->data.gcm_params);

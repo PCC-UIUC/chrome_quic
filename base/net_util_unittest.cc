@@ -65,6 +65,15 @@ struct HeaderCase {
   const char* const expected;
 };
 
+#if defined(OS_LINUX) || defined(OS_ANDROID) || defined(OS_CHROMEOS)
+const char kWiFiSSID[] = "TestWiFi";
+const char kInterfaceWithDifferentSSID[] = "wlan999";
+
+std::string TestGetInterfaceSSID(const std::string& ifname) {
+  return (ifname == kInterfaceWithDifferentSSID) ? "AnotherSSID" : kWiFiSSID;
+}
+#endif
+
 // Fills in sockaddr for the given 32-bit address (IPv4.)
 // |bytes| should be an array of length 4.
 void MakeIPv4Address(const uint8* bytes, int port, SockaddrStorage* storage) {
@@ -782,31 +791,42 @@ TEST(NetUtilTest, IPNumberMatchesPrefix) {
 }
 
 TEST(NetUtilTest, IsLocalhost) {
-  EXPECT_TRUE(net::IsLocalhost("localhost"));
-  EXPECT_TRUE(net::IsLocalhost("localhost.localdomain"));
-  EXPECT_TRUE(net::IsLocalhost("localhost6"));
-  EXPECT_TRUE(net::IsLocalhost("localhost6.localdomain6"));
-  EXPECT_TRUE(net::IsLocalhost("127.0.0.1"));
-  EXPECT_TRUE(net::IsLocalhost("127.0.1.0"));
-  EXPECT_TRUE(net::IsLocalhost("127.1.0.0"));
-  EXPECT_TRUE(net::IsLocalhost("127.0.0.255"));
-  EXPECT_TRUE(net::IsLocalhost("127.0.255.0"));
-  EXPECT_TRUE(net::IsLocalhost("127.255.0.0"));
-  EXPECT_TRUE(net::IsLocalhost("::1"));
-  EXPECT_TRUE(net::IsLocalhost("0:0:0:0:0:0:0:1"));
+  EXPECT_TRUE(IsLocalhost("localhost"));
+  EXPECT_TRUE(IsLocalhost("localhost.localdomain"));
+  EXPECT_TRUE(IsLocalhost("localhost6"));
+  EXPECT_TRUE(IsLocalhost("localhost6.localdomain6"));
+  EXPECT_TRUE(IsLocalhost("127.0.0.1"));
+  EXPECT_TRUE(IsLocalhost("127.0.1.0"));
+  EXPECT_TRUE(IsLocalhost("127.1.0.0"));
+  EXPECT_TRUE(IsLocalhost("127.0.0.255"));
+  EXPECT_TRUE(IsLocalhost("127.0.255.0"));
+  EXPECT_TRUE(IsLocalhost("127.255.0.0"));
+  EXPECT_TRUE(IsLocalhost("::1"));
+  EXPECT_TRUE(IsLocalhost("0:0:0:0:0:0:0:1"));
+  EXPECT_TRUE(IsLocalhost("foo.localhost"));
 
-  EXPECT_FALSE(net::IsLocalhost("localhostx"));
-  EXPECT_FALSE(net::IsLocalhost("foo.localdomain"));
-  EXPECT_FALSE(net::IsLocalhost("localhost6x"));
-  EXPECT_FALSE(net::IsLocalhost("localhost.localdomain6"));
-  EXPECT_FALSE(net::IsLocalhost("localhost6.localdomain"));
-  EXPECT_FALSE(net::IsLocalhost("127.0.0.1.1"));
-  EXPECT_FALSE(net::IsLocalhost(".127.0.0.255"));
-  EXPECT_FALSE(net::IsLocalhost("::2"));
-  EXPECT_FALSE(net::IsLocalhost("::1:1"));
-  EXPECT_FALSE(net::IsLocalhost("0:0:0:0:1:0:0:1"));
-  EXPECT_FALSE(net::IsLocalhost("::1:1"));
-  EXPECT_FALSE(net::IsLocalhost("0:0:0:0:0:0:0:0:1"));
+  EXPECT_FALSE(IsLocalhost("localhostx"));
+  EXPECT_FALSE(IsLocalhost("foo.localdomain"));
+  EXPECT_FALSE(IsLocalhost("localhost6x"));
+  EXPECT_FALSE(IsLocalhost("localhost.localdomain6"));
+  EXPECT_FALSE(IsLocalhost("localhost6.localdomain"));
+  EXPECT_FALSE(IsLocalhost("127.0.0.1.1"));
+  EXPECT_FALSE(IsLocalhost(".127.0.0.255"));
+  EXPECT_FALSE(IsLocalhost("::2"));
+  EXPECT_FALSE(IsLocalhost("::1:1"));
+  EXPECT_FALSE(IsLocalhost("0:0:0:0:1:0:0:1"));
+  EXPECT_FALSE(IsLocalhost("::1:1"));
+  EXPECT_FALSE(IsLocalhost("0:0:0:0:0:0:0:0:1"));
+  EXPECT_FALSE(IsLocalhost("foo.localhost.com"));
+  EXPECT_FALSE(IsLocalhost("foo.localhoste"));
+}
+
+TEST(NetUtilTest, IsLocalhostTLD) {
+  EXPECT_TRUE(IsLocalhostTLD("foo.localhost"));
+  EXPECT_TRUE(IsLocalhostTLD("foo.localhost."));
+  EXPECT_FALSE(IsLocalhostTLD("foo.localhos"));
+  EXPECT_FALSE(IsLocalhostTLD("foo.localhost.com"));
+  EXPECT_FALSE(IsLocalhost("foo.localhoste"));
 }
 
 // Verify GetNetworkList().
@@ -913,11 +933,11 @@ char* CopyInterfaceName(const char* ifname, int ifname_size, char* output) {
   return output;
 }
 
-char* GetInterfaceName(unsigned int interface_index, char* ifname) {
+char* GetInterfaceName(int interface_index, char* ifname) {
   return CopyInterfaceName(ifname_em1, arraysize(ifname_em1), ifname);
 }
 
-char* GetInterfaceNameVM(unsigned int interface_index, char* ifname) {
+char* GetInterfaceNameVM(int interface_index, char* ifname) {
   return CopyInterfaceName(ifname_vm, arraysize(ifname_vm), ifname);
 }
 
@@ -928,7 +948,7 @@ TEST(NetUtilTest, GetNetworkListTrimming) {
 
   NetworkInterfaceList results;
   ::base::hash_set<int> online_links;
-  net::internal::AddressTrackerLinux::AddressMap address_map;
+  internal::AddressTrackerLinux::AddressMap address_map;
 
   // Interface 1 is offline.
   struct ifaddrmsg msg = {
@@ -941,12 +961,9 @@ TEST(NetUtilTest, GetNetworkListTrimming) {
 
   // Address of offline links should be ignored.
   ASSERT_TRUE(address_map.insert(std::make_pair(ipv6_address, msg)).second);
-  EXPECT_TRUE(
-      net::internal::GetNetworkListImpl(&results,
-                                        INCLUDE_HOST_SCOPE_VIRTUAL_INTERFACES,
-                                        online_links,
-                                        address_map,
-                                        GetInterfaceName));
+  EXPECT_TRUE(internal::GetNetworkListImpl(
+      &results, INCLUDE_HOST_SCOPE_VIRTUAL_INTERFACES, online_links,
+      address_map, GetInterfaceName));
   EXPECT_EQ(results.size(), 0ul);
 
   // Mark interface 1 online.
@@ -956,23 +973,17 @@ TEST(NetUtilTest, GetNetworkListTrimming) {
   address_map.clear();
   ASSERT_TRUE(
       address_map.insert(std::make_pair(ipv6_local_address, msg)).second);
-  EXPECT_TRUE(
-      net::internal::GetNetworkListImpl(&results,
-                                        INCLUDE_HOST_SCOPE_VIRTUAL_INTERFACES,
-                                        online_links,
-                                        address_map,
-                                        GetInterfaceName));
+  EXPECT_TRUE(internal::GetNetworkListImpl(
+      &results, INCLUDE_HOST_SCOPE_VIRTUAL_INTERFACES, online_links,
+      address_map, GetInterfaceName));
   EXPECT_EQ(results.size(), 0ul);
 
   // vmware address should return by default.
   address_map.clear();
   ASSERT_TRUE(address_map.insert(std::make_pair(ipv6_address, msg)).second);
-  EXPECT_TRUE(
-      net::internal::GetNetworkListImpl(&results,
-                                        INCLUDE_HOST_SCOPE_VIRTUAL_INTERFACES,
-                                        online_links,
-                                        address_map,
-                                        GetInterfaceNameVM));
+  EXPECT_TRUE(internal::GetNetworkListImpl(
+      &results, INCLUDE_HOST_SCOPE_VIRTUAL_INTERFACES, online_links,
+      address_map, GetInterfaceNameVM));
   EXPECT_EQ(results.size(), 1ul);
   EXPECT_EQ(results[0].name, ifname_vm);
   EXPECT_EQ(results[0].prefix_length, 1ul);
@@ -982,12 +993,9 @@ TEST(NetUtilTest, GetNetworkListTrimming) {
   // vmware address should be trimmed out if policy specified so.
   address_map.clear();
   ASSERT_TRUE(address_map.insert(std::make_pair(ipv6_address, msg)).second);
-  EXPECT_TRUE(
-      net::internal::GetNetworkListImpl(&results,
-                                        EXCLUDE_HOST_SCOPE_VIRTUAL_INTERFACES,
-                                        online_links,
-                                        address_map,
-                                        GetInterfaceNameVM));
+  EXPECT_TRUE(internal::GetNetworkListImpl(
+      &results, EXCLUDE_HOST_SCOPE_VIRTUAL_INTERFACES, online_links,
+      address_map, GetInterfaceNameVM));
   EXPECT_EQ(results.size(), 0ul);
   results.clear();
 
@@ -995,12 +1003,9 @@ TEST(NetUtilTest, GetNetworkListTrimming) {
   address_map.clear();
   msg.ifa_flags = IFA_F_TENTATIVE;
   ASSERT_TRUE(address_map.insert(std::make_pair(ipv6_address, msg)).second);
-  EXPECT_TRUE(
-      net::internal::GetNetworkListImpl(&results,
-                                        INCLUDE_HOST_SCOPE_VIRTUAL_INTERFACES,
-                                        online_links,
-                                        address_map,
-                                        GetInterfaceName));
+  EXPECT_TRUE(internal::GetNetworkListImpl(
+      &results, INCLUDE_HOST_SCOPE_VIRTUAL_INTERFACES, online_links,
+      address_map, GetInterfaceName));
   EXPECT_EQ(results.size(), 0ul);
   results.clear();
 
@@ -1009,12 +1014,9 @@ TEST(NetUtilTest, GetNetworkListTrimming) {
   address_map.clear();
   msg.ifa_flags = IFA_F_TEMPORARY;
   ASSERT_TRUE(address_map.insert(std::make_pair(ipv6_address, msg)).second);
-  EXPECT_TRUE(
-      net::internal::GetNetworkListImpl(&results,
-                                        INCLUDE_HOST_SCOPE_VIRTUAL_INTERFACES,
-                                        online_links,
-                                        address_map,
-                                        GetInterfaceName));
+  EXPECT_TRUE(internal::GetNetworkListImpl(
+      &results, INCLUDE_HOST_SCOPE_VIRTUAL_INTERFACES, online_links,
+      address_map, GetInterfaceName));
   EXPECT_EQ(results.size(), 1ul);
   EXPECT_EQ(results[0].name, ifname_em1);
   EXPECT_EQ(results[0].prefix_length, 1ul);
@@ -1027,12 +1029,9 @@ TEST(NetUtilTest, GetNetworkListTrimming) {
   address_map.clear();
   msg.ifa_flags = IFA_F_DEPRECATED;
   ASSERT_TRUE(address_map.insert(std::make_pair(ipv6_address, msg)).second);
-  EXPECT_TRUE(
-      net::internal::GetNetworkListImpl(&results,
-                                        INCLUDE_HOST_SCOPE_VIRTUAL_INTERFACES,
-                                        online_links,
-                                        address_map,
-                                        GetInterfaceName));
+  EXPECT_TRUE(internal::GetNetworkListImpl(
+      &results, INCLUDE_HOST_SCOPE_VIRTUAL_INTERFACES, online_links,
+      address_map, GetInterfaceName));
   EXPECT_EQ(results.size(), 1ul);
   EXPECT_EQ(results[0].name, ifname_em1);
   EXPECT_EQ(results[0].prefix_length, 1ul);
@@ -1058,7 +1057,7 @@ TEST(NetUtilTest, GetNetworkListTrimming) {
   // Address of offline links should be ignored.
   ASSERT_TRUE(FillIfaddrs(&interface, ifname_em1, IFF_UP, ipv6_address,
                           ipv6_netmask, addresses));
-  EXPECT_TRUE(net::internal::GetNetworkListImpl(
+  EXPECT_TRUE(internal::GetNetworkListImpl(
       &results, INCLUDE_HOST_SCOPE_VIRTUAL_INTERFACES, &interface,
       &ip_attributes_getter));
   EXPECT_EQ(results.size(), 0ul);
@@ -1066,7 +1065,7 @@ TEST(NetUtilTest, GetNetworkListTrimming) {
   // Local address should be trimmed out.
   ASSERT_TRUE(FillIfaddrs(&interface, ifname_em1, IFF_RUNNING,
                           ipv6_local_address, ipv6_netmask, addresses));
-  EXPECT_TRUE(net::internal::GetNetworkListImpl(
+  EXPECT_TRUE(internal::GetNetworkListImpl(
       &results, INCLUDE_HOST_SCOPE_VIRTUAL_INTERFACES, &interface,
       &ip_attributes_getter));
   EXPECT_EQ(results.size(), 0ul);
@@ -1074,7 +1073,7 @@ TEST(NetUtilTest, GetNetworkListTrimming) {
   // vmware address should return by default.
   ASSERT_TRUE(FillIfaddrs(&interface, ifname_vm, IFF_RUNNING, ipv6_address,
                           ipv6_netmask, addresses));
-  EXPECT_TRUE(net::internal::GetNetworkListImpl(
+  EXPECT_TRUE(internal::GetNetworkListImpl(
       &results, INCLUDE_HOST_SCOPE_VIRTUAL_INTERFACES, &interface,
       &ip_attributes_getter));
   EXPECT_EQ(results.size(), 1ul);
@@ -1086,7 +1085,7 @@ TEST(NetUtilTest, GetNetworkListTrimming) {
   // vmware address should be trimmed out if policy specified so.
   ASSERT_TRUE(FillIfaddrs(&interface, ifname_vm, IFF_RUNNING, ipv6_address,
                           ipv6_netmask, addresses));
-  EXPECT_TRUE(net::internal::GetNetworkListImpl(
+  EXPECT_TRUE(internal::GetNetworkListImpl(
       &results, EXCLUDE_HOST_SCOPE_VIRTUAL_INTERFACES, &interface,
       &ip_attributes_getter));
   EXPECT_EQ(results.size(), 0ul);
@@ -1097,7 +1096,7 @@ TEST(NetUtilTest, GetNetworkListTrimming) {
   ip_attributes_getter.set_native_attributes(IN6_IFF_ANYCAST);
   ASSERT_TRUE(FillIfaddrs(&interface, ifname_em1, IFF_RUNNING, ipv6_address,
                           ipv6_netmask, addresses));
-  EXPECT_TRUE(net::internal::GetNetworkListImpl(
+  EXPECT_TRUE(internal::GetNetworkListImpl(
       &results, INCLUDE_HOST_SCOPE_VIRTUAL_INTERFACES, &interface,
       &ip_attributes_getter));
   EXPECT_EQ(results.size(), 0ul);
@@ -1108,7 +1107,7 @@ TEST(NetUtilTest, GetNetworkListTrimming) {
   ip_attributes_getter.set_native_attributes(IN6_IFF_TEMPORARY);
   ASSERT_TRUE(FillIfaddrs(&interface, ifname_em1, IFF_RUNNING, ipv6_address,
                           ipv6_netmask, addresses));
-  EXPECT_TRUE(net::internal::GetNetworkListImpl(
+  EXPECT_TRUE(internal::GetNetworkListImpl(
       &results, INCLUDE_HOST_SCOPE_VIRTUAL_INTERFACES, &interface,
       &ip_attributes_getter));
   EXPECT_EQ(results.size(), 1ul);
@@ -1123,7 +1122,7 @@ TEST(NetUtilTest, GetNetworkListTrimming) {
   ip_attributes_getter.set_native_attributes(IN6_IFF_DEPRECATED);
   ASSERT_TRUE(FillIfaddrs(&interface, ifname_em1, IFF_RUNNING, ipv6_address,
                           ipv6_netmask, addresses));
-  EXPECT_TRUE(net::internal::GetNetworkListImpl(
+  EXPECT_TRUE(internal::GetNetworkListImpl(
       &results, INCLUDE_HOST_SCOPE_VIRTUAL_INTERFACES, &interface,
       &ip_attributes_getter));
   EXPECT_EQ(results.size(), 1ul);
@@ -1212,7 +1211,7 @@ TEST(NetUtilTest, GetNetworkListTrimming) {
       addresses /* sock_addrs */));
   adapter_address.OperStatus = IfOperStatusDown;
 
-  EXPECT_TRUE(net::internal::GetNetworkListImpl(
+  EXPECT_TRUE(internal::GetNetworkListImpl(
       &results, INCLUDE_HOST_SCOPE_VIRTUAL_INTERFACES, true, &adapter_address));
 
   EXPECT_EQ(results.size(), 0ul);
@@ -1224,7 +1223,7 @@ TEST(NetUtilTest, GetNetworkListTrimming) {
       addresses /* sock_addrs */));
   adapter_address.IfType = IF_TYPE_SOFTWARE_LOOPBACK;
 
-  EXPECT_TRUE(net::internal::GetNetworkListImpl(
+  EXPECT_TRUE(internal::GetNetworkListImpl(
       &results, INCLUDE_HOST_SCOPE_VIRTUAL_INTERFACES, true, &adapter_address));
   EXPECT_EQ(results.size(), 0ul);
 
@@ -1233,7 +1232,7 @@ TEST(NetUtilTest, GetNetworkListTrimming) {
       &adapter_address /* adapter_address */, ifname_vm /* ifname */,
       ipv6_address /* ip_address */, ipv6_prefix /* ip_netmask */,
       addresses /* sock_addrs */));
-  EXPECT_TRUE(net::internal::GetNetworkListImpl(
+  EXPECT_TRUE(internal::GetNetworkListImpl(
       &results, INCLUDE_HOST_SCOPE_VIRTUAL_INTERFACES, true, &adapter_address));
   EXPECT_EQ(results.size(), 1ul);
   EXPECT_EQ(results[0].name, ifname_vm);
@@ -1247,7 +1246,7 @@ TEST(NetUtilTest, GetNetworkListTrimming) {
       &adapter_address /* adapter_address */, ifname_vm /* ifname */,
       ipv6_address /* ip_address */, ipv6_prefix /* ip_netmask */,
       addresses /* sock_addrs */));
-  EXPECT_TRUE(net::internal::GetNetworkListImpl(
+  EXPECT_TRUE(internal::GetNetworkListImpl(
       &results, EXCLUDE_HOST_SCOPE_VIRTUAL_INTERFACES, true, &adapter_address));
   EXPECT_EQ(results.size(), 0ul);
   results.clear();
@@ -1259,7 +1258,7 @@ TEST(NetUtilTest, GetNetworkListTrimming) {
       addresses /* sock_addrs */));
   adapter_address.FirstUnicastAddress->DadState = IpDadStateTentative;
 
-  EXPECT_TRUE(net::internal::GetNetworkListImpl(
+  EXPECT_TRUE(internal::GetNetworkListImpl(
       &results, INCLUDE_HOST_SCOPE_VIRTUAL_INTERFACES, true, &adapter_address));
   EXPECT_EQ(results.size(), 0ul);
   results.clear();
@@ -1275,7 +1274,7 @@ TEST(NetUtilTest, GetNetworkListTrimming) {
       IpPrefixOriginRouterAdvertisement;
   adapter_address.FirstUnicastAddress->SuffixOrigin = IpSuffixOriginRandom;
 
-  EXPECT_TRUE(net::internal::GetNetworkListImpl(
+  EXPECT_TRUE(internal::GetNetworkListImpl(
       &results, INCLUDE_HOST_SCOPE_VIRTUAL_INTERFACES, true, &adapter_address));
   EXPECT_EQ(results.size(), 1ul);
   EXPECT_EQ(results[0].name, ifname_em1);
@@ -1293,7 +1292,7 @@ TEST(NetUtilTest, GetNetworkListTrimming) {
       addresses /* sock_addrs */));
   adapter_address.FirstUnicastAddress->PreferredLifetime = 0;
   adapter_address.FriendlyName = const_cast<PWCHAR>(L"FriendlyInterfaceName");
-  EXPECT_TRUE(net::internal::GetNetworkListImpl(
+  EXPECT_TRUE(internal::GetNetworkListImpl(
       &results, INCLUDE_HOST_SCOPE_VIRTUAL_INTERFACES, true, &adapter_address));
   EXPECT_EQ(results.size(), 1ul);
   EXPECT_EQ(results[0].friendly_name, "FriendlyInterfaceName");
@@ -1305,6 +1304,56 @@ TEST(NetUtilTest, GetNetworkListTrimming) {
 }
 
 #endif  // !OS_MACOSX && !OS_WIN && !OS_NACL
+
+TEST(NetUtilTest, GetWifiSSID) {
+  // We can't check the result of GetWifiSSID() directly, since the result
+  // will differ across machines. Simply exercise the code path and hope that it
+  // doesn't crash.
+  EXPECT_NE((const char*)NULL, GetWifiSSID().c_str());
+}
+
+#if defined(OS_LINUX) || defined(OS_ANDROID) || defined(OS_CHROMEOS)
+TEST(NetUtilTest, GetWifiSSIDFromInterfaceList) {
+  NetworkInterfaceList list;
+  EXPECT_EQ(std::string(), internal::GetWifiSSIDFromInterfaceListInternal(
+                               list, TestGetInterfaceSSID));
+
+  NetworkInterface interface1;
+  interface1.name = "wlan0";
+  interface1.type = NetworkChangeNotifier::CONNECTION_WIFI;
+  list.push_back(interface1);
+  ASSERT_EQ(1u, list.size());
+  EXPECT_EQ(std::string(kWiFiSSID),
+            internal::GetWifiSSIDFromInterfaceListInternal(
+                list, TestGetInterfaceSSID));
+
+  NetworkInterface interface2;
+  interface2.name = "wlan1";
+  interface2.type = NetworkChangeNotifier::CONNECTION_WIFI;
+  list.push_back(interface2);
+  ASSERT_EQ(2u, list.size());
+  EXPECT_EQ(std::string(kWiFiSSID),
+            internal::GetWifiSSIDFromInterfaceListInternal(
+                list, TestGetInterfaceSSID));
+
+  NetworkInterface interface3;
+  interface3.name = kInterfaceWithDifferentSSID;
+  interface3.type = NetworkChangeNotifier::CONNECTION_WIFI;
+  list.push_back(interface3);
+  ASSERT_EQ(3u, list.size());
+  EXPECT_EQ(std::string(), internal::GetWifiSSIDFromInterfaceListInternal(
+                               list, TestGetInterfaceSSID));
+
+  list.pop_back();
+  NetworkInterface interface4;
+  interface4.name = "eth0";
+  interface4.type = NetworkChangeNotifier::CONNECTION_ETHERNET;
+  list.push_back(interface4);
+  ASSERT_EQ(3u, list.size());
+  EXPECT_EQ(std::string(), internal::GetWifiSSIDFromInterfaceListInternal(
+                               list, TestGetInterfaceSSID));
+}
+#endif  // OS_LINUX
 
 namespace {
 
@@ -1462,7 +1511,6 @@ const NonUniqueNameTestData kNonUniqueNameTestData[] = {
     { false, "host.intranet.example" },
     // gTLDs under discussion, but not yet assigned.
     { false, "intranet.corp" },
-    { false, "example.tech" },
     { false, "intranet.internal" },
     // Invalid host names are treated as unique - but expected to be
     // filtered out before then.

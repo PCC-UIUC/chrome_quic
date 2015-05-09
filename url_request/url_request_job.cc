@@ -21,19 +21,38 @@
 #include "net/filter/filter.h"
 #include "net/http/http_response_headers.h"
 
+namespace net {
+
 namespace {
 
 // Callback for TYPE_URL_REQUEST_FILTERS_SET net-internals event.
-base::Value* FiltersSetCallback(net::Filter* filter,
-                                enum net::NetLog::LogLevel /* log_level */) {
+base::Value* FiltersSetCallback(Filter* filter,
+                                NetLogCaptureMode /* capture_mode */) {
   base::DictionaryValue* event_params = new base::DictionaryValue();
   event_params->SetString("filters", filter->OrderedFilterList());
   return event_params;
 }
 
-}  // namespace
+std::string ComputeMethodForRedirect(const std::string& method,
+                                     int http_status_code) {
+  // For 303 redirects, all request methods except HEAD are converted to GET,
+  // as per the latest httpbis draft.  The draft also allows POST requests to
+  // be converted to GETs when following 301/302 redirects, for historical
+  // reasons. Most major browsers do this and so shall we.  Both RFC 2616 and
+  // the httpbis draft say to prompt the user to confirm the generation of new
+  // requests, other than GET and HEAD requests, but IE omits these prompts and
+  // so shall we.
+  // See:
+  // https://tools.ietf.org/html/draft-ietf-httpbis-p2-semantics-17#section-7.3
+  if ((http_status_code == 303 && method != "HEAD") ||
+      ((http_status_code == 301 || http_status_code == 302) &&
+       method == "POST")) {
+    return "GET";
+  }
+  return method;
+}
 
-namespace net {
+}  // namespace
 
 URLRequestJob::URLRequestJob(URLRequest* request,
                              NetworkDelegate* network_delegate)
@@ -41,7 +60,6 @@ URLRequestJob::URLRequestJob(URLRequest* request,
       done_(false),
       prefilter_bytes_read_(0),
       postfilter_bytes_read_(0),
-      filter_input_byte_count_(0),
       filter_needs_more_output_space_(false),
       filtered_read_buffer_len_(0),
       has_handled_response_(false),
@@ -97,31 +115,18 @@ bool URLRequestJob::Read(IOBuffer* buf, int buf_size, int *bytes_read) {
     filtered_read_buffer_ = buf;
     filtered_read_buffer_len_ = buf_size;
 
-    // TODO(vadimt): Remove ScopedTracker below once crbug.com/423948 is fixed.
-    tracked_objects::ScopedTracker tracking_profile2(
-        FROM_HERE_WITH_EXPLICIT_FUNCTION("423948 URLRequestJob::Read2"));
-
     if (ReadFilteredData(bytes_read)) {
       rv = true;   // We have data to return.
 
       // It is fine to call DoneReading even if ReadFilteredData receives 0
       // bytes from the net, but we avoid making that call if we know for
       // sure that's the case (ReadRawDataHelper path).
-      // TODO(vadimt): Remove ScopedTracker below once crbug.com/423948 is
-      // fixed.
-      tracked_objects::ScopedTracker tracking_profile3(
-          FROM_HERE_WITH_EXPLICIT_FUNCTION("423948 URLRequestJob::Read3"));
-
       if (*bytes_read == 0)
         DoneReading();
     } else {
       rv = false;  // Error, or a new IO is pending.
     }
   }
-
-  // TODO(vadimt): Remove ScopedTracker below once crbug.com/423948 is fixed.
-  tracked_objects::ScopedTracker tracking_profile4(
-      FROM_HERE_WITH_EXPLICIT_FUNCTION("423948 URLRequestJob::Read4"));
 
   if (rv && *bytes_read == 0)
     NotifyDone(URLRequestStatus());
@@ -348,12 +353,6 @@ bool URLRequestJob::CanEnablePrivacyMode() const {
   return request_->CanEnablePrivacyMode();
 }
 
-CookieStore* URLRequestJob::GetCookieStore() const {
-  DCHECK(request_);
-
-  return request_->cookie_store();
-}
-
 void URLRequestJob::NotifyBeforeNetworkStart(bool* defer) {
   if (!request_)
     return;
@@ -362,11 +361,6 @@ void URLRequestJob::NotifyBeforeNetworkStart(bool* defer) {
 }
 
 void URLRequestJob::NotifyHeadersComplete() {
-  // TODO(vadimt): Remove ScopedTracker below once crbug.com/423948 is fixed.
-  tracked_objects::ScopedTracker tracking_profile(
-      FROM_HERE_WITH_EXPLICIT_FUNCTION(
-          "423948 URLRequestJob::NotifyHeadersComplete"));
-
   if (!request_ || !request_->has_delegate())
     return;  // The request was destroyed, so there is no more work to do.
 
@@ -388,45 +382,18 @@ void URLRequestJob::NotifyHeadersComplete() {
   // survival until we can get out of this method.
   scoped_refptr<URLRequestJob> self_preservation(this);
 
-  if (request_) {
-    // TODO(vadimt): Remove ScopedTracker below once crbug.com/423948 is fixed.
-    tracked_objects::ScopedTracker tracking_profile1(
-        FROM_HERE_WITH_EXPLICIT_FUNCTION(
-            "423948 URLRequestJob::NotifyHeadersComplete 1"));
-
+  if (request_)
     request_->OnHeadersComplete();
-  }
-
-  // TODO(vadimt): Remove ScopedTracker below once crbug.com/423948 is fixed.
-  tracked_objects::ScopedTracker tracking_profile2(
-      FROM_HERE_WITH_EXPLICIT_FUNCTION(
-          "423948 URLRequestJob::NotifyHeadersComplete 2"));
 
   GURL new_location;
   int http_status_code;
   if (IsRedirectResponse(&new_location, &http_status_code)) {
-    // TODO(vadimt): Remove ScopedTracker below once crbug.com/423948 is fixed.
-    tracked_objects::ScopedTracker tracking_profile3(
-        FROM_HERE_WITH_EXPLICIT_FUNCTION(
-            "423948 URLRequestJob::NotifyHeadersComplete 3"));
-
     // Redirect response bodies are not read. Notify the transaction
     // so it does not treat being stopped as an error.
     DoneReadingRedirectResponse();
 
-    // TODO(vadimt): Remove ScopedTracker below once crbug.com/423948 is fixed.
-    tracked_objects::ScopedTracker tracking_profile4(
-        FROM_HERE_WITH_EXPLICIT_FUNCTION(
-            "423948 URLRequestJob::NotifyHeadersComplete 4"));
-
     RedirectInfo redirect_info =
         ComputeRedirectInfo(new_location, http_status_code);
-
-    // TODO(vadimt): Remove ScopedTracker below once crbug.com/423948 is fixed.
-    tracked_objects::ScopedTracker tracking_profile5(
-        FROM_HERE_WITH_EXPLICIT_FUNCTION(
-            "423948 URLRequestJob::NotifyHeadersComplete 5"));
-
     bool defer_redirect = false;
     request_->NotifyReceivedRedirect(redirect_info, &defer_redirect);
 
@@ -434,11 +401,6 @@ void URLRequestJob::NotifyHeadersComplete() {
     // NotifyReceivedRedirect
     if (!request_ || !request_->has_delegate())
       return;
-
-    // TODO(vadimt): Remove ScopedTracker below once crbug.com/423948 is fixed.
-    tracked_objects::ScopedTracker tracking_profile6(
-        FROM_HERE_WITH_EXPLICIT_FUNCTION(
-            "423948 URLRequestJob::NotifyHeadersComplete 6"));
 
     // If we were not cancelled, then maybe follow the redirect.
     if (request_->status().is_success()) {
@@ -450,18 +412,8 @@ void URLRequestJob::NotifyHeadersComplete() {
       return;
     }
   } else if (NeedsAuth()) {
-    // TODO(vadimt): Remove ScopedTracker below once crbug.com/423948 is fixed.
-    tracked_objects::ScopedTracker tracking_profile7(
-        FROM_HERE_WITH_EXPLICIT_FUNCTION(
-            "423948 URLRequestJob::NotifyHeadersComplete 7"));
-
     scoped_refptr<AuthChallengeInfo> auth_info;
     GetAuthChallengeInfo(&auth_info);
-
-    // TODO(vadimt): Remove ScopedTracker below once crbug.com/423948 is fixed.
-    tracked_objects::ScopedTracker tracking_profile8(
-        FROM_HERE_WITH_EXPLICIT_FUNCTION(
-            "423948 URLRequestJob::NotifyHeadersComplete 8"));
 
     // Need to check for a NULL auth_info because the server may have failed
     // to send a challenge with the 401 response.
@@ -471,11 +423,6 @@ void URLRequestJob::NotifyHeadersComplete() {
       return;
     }
   }
-
-  // TODO(vadimt): Remove ScopedTracker below once crbug.com/423948 is fixed.
-  tracked_objects::ScopedTracker tracking_profile9(
-      FROM_HERE_WITH_EXPLICIT_FUNCTION(
-          "423948 URLRequestJob::NotifyHeadersComplete 9"));
 
   has_handled_response_ = true;
   if (request_->status().is_success())
@@ -492,18 +439,14 @@ void URLRequestJob::NotifyHeadersComplete() {
         base::Bind(&FiltersSetCallback, base::Unretained(filter_.get())));
   }
 
-  // TODO(vadimt): Remove ScopedTracker below once crbug.com/423948 is fixed.
-  tracked_objects::ScopedTracker tracking_profile10(
-      FROM_HERE_WITH_EXPLICIT_FUNCTION(
-          "423948 URLRequestJob::NotifyHeadersComplete 10"));
-
   request_->NotifyResponseStarted();
 }
 
 void URLRequestJob::NotifyReadComplete(int bytes_read) {
-  // TODO(vadimt): Remove ScopedTracker below once crbug.com/423948 is fixed.
+  // TODO(cbentzel): Remove ScopedTracker below once crbug.com/475755 is fixed.
   tracked_objects::ScopedTracker tracking_profile(
-      FROM_HERE_WITH_EXPLICIT_FUNCTION("URLRequestJob::NotifyReadComplete"));
+      FROM_HERE_WITH_EXPLICIT_FUNCTION(
+          "475755 URLRequestJob::NotifyReadComplete"));
 
   if (!request_ || !request_->has_delegate())
     return;  // The request was destroyed, so there is no more work to do.
@@ -755,7 +698,8 @@ bool URLRequestJob::ReadFilteredData(int* bytes_read) {
       }
 
       // If logging all bytes is enabled, log the filtered bytes read.
-      if (rv && request() && request()->net_log().IsLoggingBytes() &&
+      if (rv && request() &&
+          request()->net_log().GetCaptureMode().include_socket_bytes() &&
           filtered_data_len > 0) {
         request()->net_log().AddByteTransferEvent(
             NetLog::TYPE_URL_REQUEST_JOB_FILTERED_BYTES_READ,
@@ -819,11 +763,6 @@ bool URLRequestJob::ReadRawDataForFilter(int* bytes_read) {
 
 bool URLRequestJob::ReadRawDataHelper(IOBuffer* buf, int buf_size,
                                       int* bytes_read) {
-  // TODO(vadimt): Remove ScopedTracker below once crbug.com/423948 is fixed.
-  tracked_objects::ScopedTracker tracking_profile(
-      FROM_HERE_WITH_EXPLICIT_FUNCTION(
-          "423948 URLRequestJob::ReadRawDataHelper"));
-
   DCHECK(!request_->status().is_io_pending());
   DCHECK(raw_read_buffer_.get() == NULL);
 
@@ -834,11 +773,6 @@ bool URLRequestJob::ReadRawDataHelper(IOBuffer* buf, int buf_size,
   bool rv = ReadRawData(buf, buf_size, bytes_read);
 
   if (!request_->status().is_io_pending()) {
-    // TODO(vadimt): Remove ScopedTracker below once crbug.com/423948 is fixed.
-    tracked_objects::ScopedTracker tracking_profile1(
-        FROM_HERE_WITH_EXPLICIT_FUNCTION(
-            "423948 URLRequestJob::ReadRawDataHelper1"));
-
     // If the read completes synchronously, either success or failure,
     // invoke the OnRawReadComplete callback so we can account for the
     // completed read.
@@ -856,7 +790,8 @@ void URLRequestJob::FollowRedirect(const RedirectInfo& redirect_info) {
 void URLRequestJob::OnRawReadComplete(int bytes_read) {
   DCHECK(raw_read_buffer_.get());
   // If |filter_| is non-NULL, bytes will be logged after it is applied instead.
-  if (!filter_.get() && request() && request()->net_log().IsLoggingBytes() &&
+  if (!filter_.get() && request() &&
+      request()->net_log().GetCaptureMode().include_socket_bytes() &&
       bytes_read > 0) {
     request()->net_log().AddByteTransferEvent(
         NetLog::TYPE_URL_REQUEST_JOB_BYTES_READ,
@@ -870,7 +805,6 @@ void URLRequestJob::OnRawReadComplete(int bytes_read) {
 }
 
 void URLRequestJob::RecordBytesRead(int bytes_read) {
-  filter_input_byte_count_ += bytes_read;
   prefilter_bytes_read_ += bytes_read;
   if (!filter_.get())
     postfilter_bytes_read_ += bytes_read;
@@ -880,14 +814,8 @@ void URLRequestJob::RecordBytesRead(int bytes_read) {
            << " pre total = " << prefilter_bytes_read_
            << " post total = " << postfilter_bytes_read_;
   UpdatePacketReadTimes();  // Facilitate stats recording if it is active.
-  if (network_delegate_) {
-    // TODO(vadimt): Remove ScopedTracker below once crbug.com/423948 is fixed.
-    tracked_objects::ScopedTracker tracking_profile(
-        FROM_HERE_WITH_EXPLICIT_FUNCTION(
-            "423948 URLRequestJob::RecordBytesRead NotifyRawBytesRead"));
-
+  if (network_delegate_)
     network_delegate_->NotifyRawBytesRead(*request_, bytes_read);
-  }
 }
 
 bool URLRequestJob::FilterHasData() {
@@ -906,8 +834,8 @@ RedirectInfo URLRequestJob::ComputeRedirectInfo(const GURL& location,
   redirect_info.status_code = http_status_code;
 
   // The request method may change, depending on the status code.
-  redirect_info.new_method = URLRequest::ComputeMethodForRedirect(
-      request_->method(), http_status_code);
+  redirect_info.new_method =
+      ComputeMethodForRedirect(request_->method(), http_status_code);
 
   // Move the reference fragment of the old location to the new one if the
   // new one has none. This duplicates mozilla's behavior.

@@ -21,14 +21,15 @@
 #include "net/base/load_timing_info.h"
 #include "net/base/load_timing_info_test_util.h"
 #include "net/base/net_errors.h"
-#include "net/base/net_log.h"
-#include "net/base/net_log_unittest.h"
 #include "net/base/request_priority.h"
 #include "net/base/test_completion_callback.h"
 #include "net/http/http_response_headers.h"
+#include "net/log/captured_net_log_entry.h"
+#include "net/log/net_log.h"
+#include "net/log/net_log_unittest.h"
+#include "net/log/test_net_log.h"
 #include "net/socket/client_socket_factory.h"
 #include "net/socket/client_socket_handle.h"
-#include "net/socket/client_socket_pool_histograms.h"
 #include "net/socket/socket_test_util.h"
 #include "net/socket/ssl_client_socket.h"
 #include "net/socket/stream_socket.h"
@@ -117,9 +118,8 @@ class MockClientSocket : public StreamSocket {
   explicit MockClientSocket(net::NetLog* net_log)
       : connected_(false),
         has_unread_data_(false),
-        net_log_(BoundNetLog::Make(net_log, net::NetLog::SOURCE_SOCKET)),
-        was_used_to_convey_data_(false) {
-  }
+        net_log_(BoundNetLog::Make(net_log, NetLog::SOURCE_SOCKET)),
+        was_used_to_convey_data_(false) {}
 
   // Sets whether the socket has unread data. If true, the next call to Read()
   // will return 1 byte and IsConnectedAndIdle() will return false.
@@ -296,8 +296,8 @@ class TestConnectJob : public ConnectJob {
 
   int ConnectInternal() override {
     AddressList ignored;
-    client_socket_factory_->CreateTransportClientSocket(
-        ignored, NULL, net::NetLog::Source());
+    client_socket_factory_->CreateTransportClientSocket(ignored, NULL,
+                                                        NetLog::Source());
     SetSocket(
         scoped_ptr<StreamSocket>(new MockClientSocket(net_log().net_log())));
     switch (job_type_) {
@@ -482,19 +482,21 @@ class TestClientSocketPool : public ClientSocketPool {
   TestClientSocketPool(
       int max_sockets,
       int max_sockets_per_group,
-      ClientSocketPoolHistograms* histograms,
       base::TimeDelta unused_idle_socket_timeout,
       base::TimeDelta used_idle_socket_timeout,
       TestClientSocketPoolBase::ConnectJobFactory* connect_job_factory)
-      : base_(NULL, max_sockets, max_sockets_per_group, histograms,
-              unused_idle_socket_timeout, used_idle_socket_timeout,
+      : base_(NULL,
+              max_sockets,
+              max_sockets_per_group,
+              unused_idle_socket_timeout,
+              used_idle_socket_timeout,
               connect_job_factory) {}
 
   ~TestClientSocketPool() override {}
 
   int RequestSocket(const std::string& group_name,
                     const void* params,
-                    net::RequestPriority priority,
+                    RequestPriority priority,
                     ClientSocketHandle* handle,
                     const CompletionCallback& callback,
                     const BoundNetLog& net_log) override {
@@ -559,10 +561,6 @@ class TestClientSocketPool : public ClientSocketPool {
 
   base::TimeDelta ConnectionTimeout() const override {
     return base_.ConnectionTimeout();
-  }
-
-  ClientSocketPoolHistograms* histograms() const override {
-    return base_.histograms();
   }
 
   const TestClientSocketPoolBase* base() const { return &base_; }
@@ -658,8 +656,7 @@ class TestConnectJobDelegate : public ConnectJob::Delegate {
 class ClientSocketPoolBaseTest : public testing::Test {
  protected:
   ClientSocketPoolBaseTest()
-      : params_(new TestSocketParams(false /* ignore_limits */)),
-        histograms_("ClientSocketPoolTest") {
+      : params_(new TestSocketParams(false /* ignore_limits */)) {
     connect_backup_jobs_enabled_ =
         internal::ClientSocketPoolBaseHelper::connect_backup_jobs_enabled();
     internal::ClientSocketPoolBaseHelper::set_connect_backup_jobs_enabled(true);
@@ -691,7 +688,6 @@ class ClientSocketPoolBaseTest : public testing::Test {
                                                      &net_log_);
     pool_.reset(new TestClientSocketPool(max_sockets,
                                          max_sockets_per_group,
-                                         &histograms_,
                                          unused_idle_socket_timeout,
                                          used_idle_socket_timeout,
                                          connect_job_factory_));
@@ -726,13 +722,12 @@ class ClientSocketPoolBaseTest : public testing::Test {
   ScopedVector<TestSocketRequest>* requests() { return test_base_.requests(); }
   size_t completion_count() const { return test_base_.completion_count(); }
 
-  CapturingNetLog net_log_;
+  TestNetLog net_log_;
   bool connect_backup_jobs_enabled_;
   bool cleanup_timer_enabled_;
   MockClientSocketFactory client_socket_factory_;
   TestConnectJobFactory* connect_job_factory_;
   scoped_refptr<TestSocketParams> params_;
-  ClientSocketPoolHistograms histograms_;
   scoped_ptr<TestClientSocketPool> pool_;
   ClientSocketPoolTest test_base_;
 };
@@ -760,7 +755,7 @@ TEST_F(ClientSocketPoolBaseTest, ConnectJob_NoTimeoutOnSynchronousCompletion) {
 TEST_F(ClientSocketPoolBaseTest, ConnectJob_TimedOut) {
   TestConnectJobDelegate delegate;
   ClientSocketHandle ignored;
-  CapturingNetLog log;
+  TestNetLog log;
 
   TestClientSocketPoolBase::Request request(
       &ignored, CompletionCallback(), DEFAULT_PRIORITY,
@@ -779,7 +774,7 @@ TEST_F(ClientSocketPoolBaseTest, ConnectJob_TimedOut) {
   base::PlatformThread::Sleep(base::TimeDelta::FromMilliseconds(1));
   EXPECT_EQ(ERR_TIMED_OUT, delegate.WaitForResult());
 
-  CapturingNetLog::CapturedEntryList entries;
+  CapturedNetLogEntry::List entries;
   log.GetEntries(&entries);
 
   EXPECT_EQ(6u, entries.size());
@@ -804,7 +799,7 @@ TEST_F(ClientSocketPoolBaseTest, BasicSynchronous) {
 
   TestCompletionCallback callback;
   ClientSocketHandle handle;
-  CapturingBoundNetLog log;
+  BoundTestNetLog log;
   TestLoadTimingInfoNotConnected(handle);
 
   EXPECT_EQ(OK,
@@ -821,7 +816,7 @@ TEST_F(ClientSocketPoolBaseTest, BasicSynchronous) {
   handle.Reset();
   TestLoadTimingInfoNotConnected(handle);
 
-  CapturingNetLog::CapturedEntryList entries;
+  CapturedNetLogEntry::List entries;
   log.GetEntries(&entries);
 
   EXPECT_EQ(4u, entries.size());
@@ -841,7 +836,7 @@ TEST_F(ClientSocketPoolBaseTest, InitConnectionFailure) {
   CreatePool(kDefaultMaxSockets, kDefaultMaxSocketsPerGroup);
 
   connect_job_factory_->set_job_type(TestConnectJob::kMockFailingJob);
-  CapturingBoundNetLog log;
+  BoundTestNetLog log;
 
   ClientSocketHandle handle;
   TestCompletionCallback callback;
@@ -862,7 +857,7 @@ TEST_F(ClientSocketPoolBaseTest, InitConnectionFailure) {
   EXPECT_TRUE(handle.ssl_error_response_info().headers.get() == NULL);
   TestLoadTimingInfoNotConnected(handle);
 
-  CapturingNetLog::CapturedEntryList entries;
+  CapturedNetLogEntry::List entries;
   log.GetEntries(&entries);
 
   EXPECT_EQ(3u, entries.size());
@@ -1678,7 +1673,7 @@ TEST_F(ClientSocketPoolBaseTest, BasicAsynchronous) {
   connect_job_factory_->set_job_type(TestConnectJob::kMockPendingJob);
   ClientSocketHandle handle;
   TestCompletionCallback callback;
-  CapturingBoundNetLog log;
+  BoundTestNetLog log;
   int rv = handle.Init("a",
                        params_,
                        LOWEST,
@@ -1697,7 +1692,7 @@ TEST_F(ClientSocketPoolBaseTest, BasicAsynchronous) {
   handle.Reset();
   TestLoadTimingInfoNotConnected(handle);
 
-  CapturingNetLog::CapturedEntryList entries;
+  CapturedNetLogEntry::List entries;
   log.GetEntries(&entries);
 
   EXPECT_EQ(4u, entries.size());
@@ -1720,7 +1715,7 @@ TEST_F(ClientSocketPoolBaseTest,
   connect_job_factory_->set_job_type(TestConnectJob::kMockPendingFailingJob);
   ClientSocketHandle handle;
   TestCompletionCallback callback;
-  CapturingBoundNetLog log;
+  BoundTestNetLog log;
   // Set the additional error state members to ensure that they get cleared.
   handle.set_is_ssl_error(true);
   HttpResponseInfo info;
@@ -1737,7 +1732,7 @@ TEST_F(ClientSocketPoolBaseTest,
   EXPECT_FALSE(handle.is_ssl_error());
   EXPECT_TRUE(handle.ssl_error_response_info().headers.get() == NULL);
 
-  CapturingNetLog::CapturedEntryList entries;
+  CapturedNetLogEntry::List entries;
   log.GetEntries(&entries);
 
   EXPECT_EQ(3u, entries.size());
@@ -1748,6 +1743,22 @@ TEST_F(ClientSocketPoolBaseTest,
       NetLog::PHASE_NONE));
   EXPECT_TRUE(LogContainsEndEvent(
       entries, 2, NetLog::TYPE_SOCKET_POOL));
+}
+
+// Check that an async ConnectJob failure does not result in creation of a new
+// ConnectJob when there's another pending request also waiting on its own
+// ConnectJob.  See http://crbug.com/463960.
+TEST_F(ClientSocketPoolBaseTest, AsyncFailureWithPendingRequestWithJob) {
+  CreatePool(2, 2);
+  connect_job_factory_->set_job_type(TestConnectJob::kMockPendingFailingJob);
+
+  EXPECT_EQ(ERR_IO_PENDING, StartRequest("a", DEFAULT_PRIORITY));
+  EXPECT_EQ(ERR_IO_PENDING, StartRequest("a", DEFAULT_PRIORITY));
+
+  EXPECT_EQ(ERR_CONNECTION_FAILED, request(0)->WaitForResult());
+  EXPECT_EQ(ERR_CONNECTION_FAILED, request(1)->WaitForResult());
+
+  EXPECT_EQ(2, client_socket_factory_.allocation_count());
 }
 
 TEST_F(ClientSocketPoolBaseTest, TwoRequestsCancelOne) {
@@ -1768,7 +1779,7 @@ TEST_F(ClientSocketPoolBaseTest, TwoRequestsCancelOne) {
                         callback.callback(),
                         pool_.get(),
                         BoundNetLog()));
-  CapturingBoundNetLog log2;
+  BoundTestNetLog log2;
   EXPECT_EQ(ERR_IO_PENDING,
             handle2.Init("a",
                          params_,
@@ -1945,48 +1956,63 @@ TEST_F(ClientSocketPoolBaseTest, LoadStateOneRequest) {
 }
 
 // Test GetLoadState in the case there are two socket requests.
+// Only the first connection in the pool should affect the pool's load status.
 TEST_F(ClientSocketPoolBaseTest, LoadStateTwoRequests) {
   CreatePool(2, 2);
   connect_job_factory_->set_job_type(TestConnectJob::kMockWaitingJob);
 
   ClientSocketHandle handle;
   TestCompletionCallback callback;
-  int rv = handle.Init("a",
-                       params_,
-                       DEFAULT_PRIORITY,
-                       callback.callback(),
-                       pool_.get(),
-                       BoundNetLog());
+  int rv = handle.Init("a", params_, DEFAULT_PRIORITY, callback.callback(),
+                       pool_.get(), BoundNetLog());
+  EXPECT_EQ(ERR_IO_PENDING, rv);
+  client_socket_factory_.SetJobLoadState(0, LOAD_STATE_RESOLVING_HOST);
+
+  ClientSocketHandle handle2;
+  TestCompletionCallback callback2;
+  rv = handle2.Init("a", params_, DEFAULT_PRIORITY, callback2.callback(),
+                    pool_.get(), BoundNetLog());
+  EXPECT_EQ(ERR_IO_PENDING, rv);
+  client_socket_factory_.SetJobLoadState(1, LOAD_STATE_RESOLVING_HOST);
+
+  // Check that both handles report the state of the first job.
+  EXPECT_EQ(LOAD_STATE_RESOLVING_HOST, handle.GetLoadState());
+  EXPECT_EQ(LOAD_STATE_RESOLVING_HOST, handle2.GetLoadState());
+
+  client_socket_factory_.SetJobLoadState(0, LOAD_STATE_CONNECTING);
+
+  // Check that both handles change to LOAD_STATE_CONNECTING.
+  EXPECT_EQ(LOAD_STATE_CONNECTING, handle.GetLoadState());
+  EXPECT_EQ(LOAD_STATE_CONNECTING, handle2.GetLoadState());
+}
+
+// Test that the second connection request does not affect the pool's load
+// status.
+TEST_F(ClientSocketPoolBaseTest, LoadStateTwoRequestsChangeSecondRequestState) {
+  CreatePool(2, 2);
+  connect_job_factory_->set_job_type(TestConnectJob::kMockWaitingJob);
+
+  ClientSocketHandle handle;
+  TestCompletionCallback callback;
+  int rv = handle.Init("a", params_, DEFAULT_PRIORITY, callback.callback(),
+                       pool_.get(), BoundNetLog());
   EXPECT_EQ(ERR_IO_PENDING, rv);
 
   ClientSocketHandle handle2;
   TestCompletionCallback callback2;
-  rv = handle2.Init("a",
-                    params_,
-                    DEFAULT_PRIORITY,
-                    callback2.callback(),
-                    pool_.get(),
-                    BoundNetLog());
+  rv = handle2.Init("a", params_, DEFAULT_PRIORITY, callback2.callback(),
+                    pool_.get(), BoundNetLog());
   EXPECT_EQ(ERR_IO_PENDING, rv);
+  client_socket_factory_.SetJobLoadState(1, LOAD_STATE_RESOLVING_HOST);
 
-  // If the first Job is in an earlier state than the second, the state of
-  // the second job should be used for both handles.
-  client_socket_factory_.SetJobLoadState(0, LOAD_STATE_RESOLVING_HOST);
   EXPECT_EQ(LOAD_STATE_CONNECTING, handle.GetLoadState());
   EXPECT_EQ(LOAD_STATE_CONNECTING, handle2.GetLoadState());
 
-  // If the second Job is in an earlier state than the second, the state of
-  // the first job should be used for both handles.
-  client_socket_factory_.SetJobLoadState(0, LOAD_STATE_SSL_HANDSHAKE);
-  // One request is farther
-  EXPECT_EQ(LOAD_STATE_SSL_HANDSHAKE, handle.GetLoadState());
-  EXPECT_EQ(LOAD_STATE_SSL_HANDSHAKE, handle2.GetLoadState());
-
-  // Farthest along job connects and the first request gets the socket.  The
+  // First job connects and the first request gets the socket.  The
   // second handle switches to the state of the remaining ConnectJob.
   client_socket_factory_.SignalJob(0);
   EXPECT_EQ(OK, callback.WaitForResult());
-  EXPECT_EQ(LOAD_STATE_CONNECTING, handle2.GetLoadState());
+  EXPECT_EQ(LOAD_STATE_RESOLVING_HOST, handle2.GetLoadState());
 }
 
 // Test GetLoadState in the case the per-group limit is reached.
@@ -2205,7 +2231,7 @@ TEST_F(ClientSocketPoolBaseTest, DisableCleanupTimerReuse) {
 
   // Request a new socket. This should reuse the old socket and complete
   // synchronously.
-  CapturingBoundNetLog log;
+  BoundTestNetLog log;
   rv = handle.Init("a",
                    params_,
                    LOWEST,
@@ -2220,7 +2246,7 @@ TEST_F(ClientSocketPoolBaseTest, DisableCleanupTimerReuse) {
   EXPECT_EQ(0, pool_->IdleSocketCountInGroup("a"));
   EXPECT_EQ(1, pool_->NumActiveSocketsInGroup("a"));
 
-  CapturingNetLog::CapturedEntryList entries;
+  CapturedNetLogEntry::List entries;
   log.GetEntries(&entries);
   EXPECT_TRUE(LogContainsEntryWithType(
       entries, 1, NetLog::TYPE_SOCKET_POOL_REUSED_AN_EXISTING_SOCKET));
@@ -2285,7 +2311,7 @@ TEST_F(ClientSocketPoolBaseTest, DisableCleanupTimerNoReuse) {
 
   // Request a new socket. This should cleanup the unused and timed out ones.
   // A new socket will be created rather than reusing the idle one.
-  CapturingBoundNetLog log;
+  BoundTestNetLog log;
   TestCompletionCallback callback3;
   rv = handle.Init("a",
                    params_,
@@ -2302,7 +2328,7 @@ TEST_F(ClientSocketPoolBaseTest, DisableCleanupTimerNoReuse) {
   EXPECT_EQ(0, pool_->IdleSocketCountInGroup("a"));
   EXPECT_EQ(1, pool_->NumActiveSocketsInGroup("a"));
 
-  CapturingNetLog::CapturedEntryList entries;
+  CapturedNetLogEntry::List entries;
   log.GetEntries(&entries);
   EXPECT_FALSE(LogContainsEntryWithType(
       entries, 1, NetLog::TYPE_SOCKET_POOL_REUSED_AN_EXISTING_SOCKET));
@@ -2364,7 +2390,7 @@ TEST_F(ClientSocketPoolBaseTest, CleanupTimedOutIdleSockets) {
   // used socket.  Request it to make sure that it's used.
 
   pool_->CleanupTimedOutIdleSockets();
-  CapturingBoundNetLog log;
+  BoundTestNetLog log;
   rv = handle.Init("a",
                    params_,
                    LOWEST,
@@ -2374,7 +2400,7 @@ TEST_F(ClientSocketPoolBaseTest, CleanupTimedOutIdleSockets) {
   EXPECT_EQ(OK, rv);
   EXPECT_TRUE(handle.is_reused());
 
-  CapturingNetLog::CapturedEntryList entries;
+  CapturedNetLogEntry::List entries;
   log.GetEntries(&entries);
   EXPECT_TRUE(LogContainsEntryWithType(
       entries, 1, NetLog::TYPE_SOCKET_POOL_REUSED_AN_EXISTING_SOCKET));

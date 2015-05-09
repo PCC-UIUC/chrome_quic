@@ -10,16 +10,13 @@
 #include "base/memory/scoped_ptr.h"
 #include "base/strings/stringprintf.h"
 #include "base/test/simple_test_clock.h"
-#include "net/base/net_log.h"
 #include "net/base/sdch_manager.h"
 #include "net/base/sdch_observer.h"
+#include "net/log/net_log.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "url/gurl.h"
 
 namespace net {
-
-// Workaround for http://crbug.com/437794; remove when fixed.
-#if !defined(OS_IOS)
 
 //------------------------------------------------------------------------------
 // Provide sample data and compression results with a sample VCDIFF dictionary.
@@ -275,7 +272,7 @@ TEST_F(SdchManagerTest, CanUseHTTPSDictionaryOverHTTPSIfEnabled) {
           target_url, server_hash, &problem_code));
   EXPECT_EQ(SDCH_OK, problem_code);
   EXPECT_TRUE(dict_set.get());
-  EXPECT_TRUE(dict_set->GetDictionary(server_hash));
+  EXPECT_TRUE(dict_set->GetDictionaryText(server_hash));
 }
 
 TEST_F(SdchManagerTest, CanNotUseHTTPDictionaryOverHTTPS) {
@@ -422,46 +419,6 @@ TEST_F(SdchManagerTest, CanStillSetExactMatchDictionary) {
                                 GURL("http://" + dictionary_domain)));
 }
 
-TEST_F(SdchManagerTest, PathMatch) {
-  bool (*PathMatch)(const std::string& path, const std::string& restriction) =
-      SdchManager::Dictionary::PathMatch;
-  // Perfect match is supported.
-  EXPECT_TRUE(PathMatch("/search", "/search"));
-  EXPECT_TRUE(PathMatch("/search/", "/search/"));
-
-  // Prefix only works if last character of restriction is a slash, or first
-  // character in path after a match is a slash. Validate each case separately.
-
-  // Rely on the slash in the path (not at the end of the restriction).
-  EXPECT_TRUE(PathMatch("/search/something", "/search"));
-  EXPECT_TRUE(PathMatch("/search/s", "/search"));
-  EXPECT_TRUE(PathMatch("/search/other", "/search"));
-  EXPECT_TRUE(PathMatch("/search/something", "/search"));
-
-  // Rely on the slash at the end of the restriction.
-  EXPECT_TRUE(PathMatch("/search/something", "/search/"));
-  EXPECT_TRUE(PathMatch("/search/s", "/search/"));
-  EXPECT_TRUE(PathMatch("/search/other", "/search/"));
-  EXPECT_TRUE(PathMatch("/search/something", "/search/"));
-
-  // Make sure less that sufficient prefix match is false.
-  EXPECT_FALSE(PathMatch("/sear", "/search"));
-  EXPECT_FALSE(PathMatch("/", "/search"));
-  EXPECT_FALSE(PathMatch(std::string(), "/search"));
-
-  // Add examples with several levels of direcories in the restriction.
-  EXPECT_FALSE(PathMatch("/search/something", "search/s"));
-  EXPECT_FALSE(PathMatch("/search/", "/search/s"));
-
-  // Make sure adding characters to path will also fail.
-  EXPECT_FALSE(PathMatch("/searching", "/search/"));
-  EXPECT_FALSE(PathMatch("/searching", "/search"));
-
-  // Make sure we're case sensitive.
-  EXPECT_FALSE(PathMatch("/ABC", "/abc"));
-  EXPECT_FALSE(PathMatch("/abc", "/ABC"));
-}
-
 // The following are only applicable while we have a latency test in the code,
 // and can be removed when that functionality is stripped.
 TEST_F(SdchManagerTest, LatencyTestControls) {
@@ -518,7 +475,7 @@ TEST_F(SdchManagerTest, CanUseMultipleManagers) {
       GURL("http://" + dictionary_domain_1 + "/random_url"),
       server_hash_1, &problem_code);
   EXPECT_TRUE(dict_set);
-  EXPECT_TRUE(dict_set->GetDictionary(server_hash_1));
+  EXPECT_TRUE(dict_set->GetDictionaryText(server_hash_1));
   EXPECT_EQ(SDCH_OK, problem_code);
 
   second_manager.AddSdchDictionary(
@@ -527,7 +484,7 @@ TEST_F(SdchManagerTest, CanUseMultipleManagers) {
       GURL("http://" + dictionary_domain_2 + "/random_url"),
       server_hash_2, &problem_code);
   EXPECT_TRUE(dict_set);
-  EXPECT_TRUE(dict_set->GetDictionary(server_hash_2));
+  EXPECT_TRUE(dict_set->GetDictionaryText(server_hash_2));
   EXPECT_EQ(SDCH_OK, problem_code);
 
   dict_set = sdch_manager()->GetDictionarySetByHash(
@@ -580,7 +537,7 @@ TEST_F(SdchManagerTest, ClearDictionaryData) {
       GURL("http://" + dictionary_domain + "/random_url"),
       server_hash, &problem_code);
   EXPECT_TRUE(dict_set);
-  EXPECT_TRUE(dict_set->GetDictionary(server_hash));
+  EXPECT_TRUE(dict_set->GetDictionaryText(server_hash));
   EXPECT_EQ(SDCH_OK, problem_code);
 
   sdch_manager()->BlacklistDomain(GURL(blacklist_url), SDCH_OK);
@@ -619,8 +576,8 @@ TEST_F(SdchManagerTest, GetDictionaryNotification) {
 TEST_F(SdchManagerTest, ExpirationCheckedProperly) {
   // Create an SDCH dictionary with an expiration time in the past.
   std::string dictionary_domain("x.y.z.google.com");
-  std::string dictionary_text(base::StringPrintf(
-      "Domain: %s\nMax-age: 0\n\n", dictionary_domain.c_str()));
+  std::string dictionary_text(base::StringPrintf("Domain: %s\nMax-age: -1\n\n",
+                                                 dictionary_domain.c_str()));
   dictionary_text.append(
       kTestVcdiffDictionary, sizeof(kTestVcdiffDictionary) - 1);
   std::string client_hash;
@@ -630,18 +587,12 @@ TEST_F(SdchManagerTest, ExpirationCheckedProperly) {
   AddSdchDictionary(dictionary_text, target_gurl);
 
   // It should be visible if looked up by hash whether expired or not.
-  scoped_ptr<base::SimpleTestClock> clock(new base::SimpleTestClock);
-  clock->SetNow(base::Time::Now());
-  clock->Advance(base::TimeDelta::FromMinutes(5));
   SdchProblemCode problem_code;
   scoped_ptr<SdchManager::DictionarySet> hash_set(
       sdch_manager()->GetDictionarySetByHash(
           target_gurl, server_hash, &problem_code).Pass());
   ASSERT_TRUE(hash_set);
   ASSERT_EQ(SDCH_OK, problem_code);
-  const_cast<SdchManager::Dictionary*>(
-      hash_set->GetDictionary(server_hash))->SetClockForTesting(
-      clock.Pass());
 
   // Make sure it's not visible for advertisement, but is visible
   // if looked up by hash.
@@ -691,18 +642,5 @@ TEST_F(SdchManagerTest, SdchDictionaryUsed) {
   EXPECT_EQ(1, observer.dictionary_used_notifications());
   EXPECT_EQ("xyzzy", observer.last_server_hash());
 }
-
-#else
-
-TEST(SdchManagerTest, SdchOffByDefault) {
-  GURL google_url("http://www.google.com");
-  scoped_ptr<SdchManager> sdch_manager(new SdchManager);
-
-  EXPECT_EQ(SDCH_DISABLED, sdch_manager->IsInSupportedDomain(google_url));
-  SdchManager::EnableSdchSupport(true);
-  EXPECT_EQ(SDCH_OK, sdch_manager->IsInSupportedDomain(google_url));
-}
-
-#endif  // !defined(OS_IOS)
 
 }  // namespace net

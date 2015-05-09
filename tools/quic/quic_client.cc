@@ -12,7 +12,6 @@
 #include <unistd.h>
 
 #include "base/logging.h"
-#include "net/quic/congestion_control/tcp_receiver.h"
 #include "net/quic/crypto/quic_random.h"
 #include "net/quic/quic_connection.h"
 #include "net/quic/quic_data_reader.h"
@@ -23,12 +22,14 @@
 #include "net/tools/quic/quic_epoll_connection_helper.h"
 #include "net/tools/quic/quic_socket_utils.h"
 #include "net/tools/quic/quic_spdy_client_stream.h"
+#include "net/tools/quic/spdy_utils.h"
 
 #ifndef SO_RXQ_OVFL
 #define SO_RXQ_OVFL 40
 #endif
 
 using std::string;
+using std::vector;
 
 namespace net {
 namespace tools {
@@ -138,12 +139,11 @@ bool QuicClient::CreateUDPSocket() {
   }
 
   if (!QuicSocketUtils::SetReceiveBufferSize(fd_,
-                                             TcpReceiver::kReceiveWindowTCP)) {
+                                             kDefaultSocketReceiveBuffer)) {
     return false;
   }
 
-  if (!QuicSocketUtils::SetSendBufferSize(fd_,
-                                          TcpReceiver::kReceiveWindowTCP)) {
+  if (!QuicSocketUtils::SetSendBufferSize(fd_, kDefaultSocketReceiveBuffer)) {
     return false;
   }
 
@@ -204,14 +204,10 @@ void QuicClient::StartConnect() {
 
   session_.reset(new QuicClientSession(
       config_,
-      new QuicConnection(GenerateConnectionId(),
-                         server_address_,
-                         helper_.get(),
+      new QuicConnection(GenerateConnectionId(), server_address_, helper_.get(),
                          factory,
-                         /* owns_writer= */ false,
-                         /* is_server= */ false,
-                         server_id_.is_https(),
-                         supported_versions_)));
+                         /* owns_writer= */ false, Perspective::IS_CLIENT,
+                         server_id_.is_https(), supported_versions_)));
 
   // Reset |writer_| after |session_| so that the old writer outlives the old
   // session.
@@ -255,23 +251,25 @@ void QuicClient::SendRequest(const BalsaHeaders& headers,
     LOG(DFATAL) << "stream creation failed!";
     return;
   }
-  stream->SendRequest(headers, body, fin);
+  stream->SendRequest(
+      SpdyUtils::RequestHeadersToSpdyHeaders(headers, stream->version()), body,
+      fin);
   stream->set_visitor(this);
 }
 
-void QuicClient::SendRequestAndWaitForResponse(const BalsaHeaders& headers,
-                                               StringPiece body,
-                                               bool fin) {
-  SendRequest(headers, "", true);
-  while (WaitForEvents()) {
-  }
+void QuicClient::SendRequestAndWaitForResponse(
+    const BalsaHeaders& headers,
+    StringPiece body,
+    bool fin) {
+  SendRequest(headers, body, fin);
+  while (WaitForEvents()) {}
 }
 
 void QuicClient::SendRequestsAndWaitForResponse(
-    const base::CommandLine::StringVector& args) {
-  for (size_t i = 0; i < args.size(); ++i) {
+    const vector<string>& url_list) {
+  for (size_t i = 0; i < url_list.size(); ++i) {
     BalsaHeaders headers;
-    headers.SetRequestFirstlineFromStringPieces("GET", args[i], "HTTP/1.1");
+    headers.SetRequestFirstlineFromStringPieces("GET", url_list[i], "HTTP/1.1");
     SendRequest(headers, "", true);
   }
   while (WaitForEvents()) {}
@@ -289,7 +287,7 @@ void QuicClient::WaitForStreamToClose(QuicStreamId id) {
   DCHECK(connected());
 
   while (connected() && !session_->IsClosedStream(id)) {
-    epoll_server_->WaitForEventsAndExecuteCallbacks();
+    WaitForEvents();
   }
 }
 
@@ -297,7 +295,7 @@ void QuicClient::WaitForCryptoHandshakeConfirmed() {
   DCHECK(connected());
 
   while (connected() && !session_->IsCryptoHandshakeConfirmed()) {
-    epoll_server_->WaitForEventsAndExecuteCallbacks();
+    WaitForEvents();
   }
 }
 
@@ -327,15 +325,19 @@ void QuicClient::OnEvent(int fd, EpollEvent* event) {
 void QuicClient::OnClose(QuicDataStream* stream) {
   QuicSpdyClientStream* client_stream =
       static_cast<QuicSpdyClientStream*>(stream);
+  BalsaHeaders headers;
+  SpdyUtils::SpdyHeadersToResponseHeaders(client_stream->headers(), &headers,
+                                          stream->version());
+
   if (response_listener_.get() != nullptr) {
     response_listener_->OnCompleteResponse(
-        stream->id(), client_stream->headers(), client_stream->data());
+        stream->id(), headers, client_stream->data());
   }
 
   // Store response headers and body.
   if (store_response_) {
-    latest_response_code_ = client_stream->headers().parsed_response_code();
-    client_stream->headers().DumpHeadersToString(&latest_response_headers_);
+    latest_response_code_ = headers.parsed_response_code();
+    headers.DumpHeadersToString(&latest_response_headers_);
     latest_response_body_ = client_stream->data();
   }
 }

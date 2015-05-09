@@ -324,17 +324,16 @@ void HttpResponseInfo::Persist(Pickle* pickle,
   pickle->WriteInt64(request_time.ToInternalValue());
   pickle->WriteInt64(response_time.ToInternalValue());
 
-  net::HttpResponseHeaders::PersistOptions persist_options =
-      net::HttpResponseHeaders::PERSIST_RAW;
+  HttpResponseHeaders::PersistOptions persist_options =
+      HttpResponseHeaders::PERSIST_RAW;
 
   if (skip_transient_headers) {
-    persist_options =
-        net::HttpResponseHeaders::PERSIST_SANS_COOKIES |
-        net::HttpResponseHeaders::PERSIST_SANS_CHALLENGES |
-        net::HttpResponseHeaders::PERSIST_SANS_HOP_BY_HOP |
-        net::HttpResponseHeaders::PERSIST_SANS_NON_CACHEABLE |
-        net::HttpResponseHeaders::PERSIST_SANS_RANGES |
-        net::HttpResponseHeaders::PERSIST_SANS_SECURITY_STATE;
+    persist_options = HttpResponseHeaders::PERSIST_SANS_COOKIES |
+                      HttpResponseHeaders::PERSIST_SANS_CHALLENGES |
+                      HttpResponseHeaders::PERSIST_SANS_HOP_BY_HOP |
+                      HttpResponseHeaders::PERSIST_SANS_NON_CACHEABLE |
+                      HttpResponseHeaders::PERSIST_SANS_RANGES |
+                      HttpResponseHeaders::PERSIST_SANS_SECURITY_STATE;
   }
 
   headers->Persist(pickle, persist_options);
@@ -380,8 +379,8 @@ HttpResponseInfo::ConnectionInfo HttpResponseInfo::ConnectionInfoFromNextProto(
       return CONNECTION_INFO_SPDY3;
     case kProtoSPDY4_14:
       return CONNECTION_INFO_HTTP2_14;
-    case kProtoSPDY4_15:
-      return CONNECTION_INFO_HTTP2_15;
+    case kProtoSPDY4:
+      return CONNECTION_INFO_HTTP2;
     case kProtoQUIC1SPDY3:
       return CONNECTION_INFO_QUIC1_SPDY3;
 
@@ -411,8 +410,12 @@ std::string HttpResponseInfo::ConnectionInfoToString(
       // This is the HTTP/2 draft-14 identifier.
       return "h2-14";
     case CONNECTION_INFO_HTTP2_15:
-      // This is the HTTP/2 draft-15 identifier.
-      return "h2-15";
+      // Since ConnectionInfo is persisted to disk, this value has to be
+      // handled, but h2-15 is removed.  Note that h2-14 and h2-15 are wire
+      // compatible for all practical purposes.
+      return "h2-14";
+    case CONNECTION_INFO_HTTP2:
+      return "h2";
     case CONNECTION_INFO_QUIC1_SPDY3:
       return "quic/1+spdy/3";
     case NUM_OF_CONNECTION_INFOS:
