@@ -11,12 +11,9 @@ namespace net {
 namespace {
 
 // Integer representation for the capture mode. The numeric value is depended on
-// for method of NetLogCaptureMode, which expect that higher values imply more
-// capabilities.
+// for methods of NetLogCaptureMode, which expect that higher values represent a
+// strict superset of the capabilities of lower values.
 enum InternalValue {
-  // Don't log any events.
-  NONE,
-
   // Log all events, but do not include the actual transferred bytes and
   // remove cookies and HTTP credentials.
   DEFAULT,
@@ -32,12 +29,7 @@ enum InternalValue {
 
 }  // namespace
 
-// Default constructor creates an empty capture mode.
-NetLogCaptureMode::NetLogCaptureMode() : NetLogCaptureMode(NONE) {
-}
-
-NetLogCaptureMode NetLogCaptureMode::None() {
-  return NetLogCaptureMode(NONE);
+NetLogCaptureMode::NetLogCaptureMode() : NetLogCaptureMode(DEFAULT) {
 }
 
 NetLogCaptureMode NetLogCaptureMode::Default() {
@@ -50,15 +42,6 @@ NetLogCaptureMode NetLogCaptureMode::IncludeCookiesAndCredentials() {
 
 NetLogCaptureMode NetLogCaptureMode::IncludeSocketBytes() {
   return NetLogCaptureMode(INCLUDE_SOCKET_BYTES);
-}
-
-NetLogCaptureMode NetLogCaptureMode::Max(NetLogCaptureMode mode1,
-                                         NetLogCaptureMode mode2) {
-  return NetLogCaptureMode(std::max(mode1.value_, mode2.value_));
-}
-
-bool NetLogCaptureMode::enabled() const {
-  return value_ != NONE;
 }
 
 bool NetLogCaptureMode::include_cookies_and_credentials() const {
@@ -77,19 +60,7 @@ bool NetLogCaptureMode::operator!=(NetLogCaptureMode mode) const {
   return !(*this == mode);
 }
 
-int32_t NetLogCaptureMode::ToInternalValueForTesting() const {
-  return ToInternalValue();
-}
-
 NetLogCaptureMode::NetLogCaptureMode(uint32_t value) : value_(value) {
-}
-
-NetLogCaptureMode NetLogCaptureMode::FromInternalValue(int32_t value) {
-  return NetLogCaptureMode(value);
-}
-
-int32_t NetLogCaptureMode::ToInternalValue() const {
-  return value_;
 }
 
 }  // namespace net

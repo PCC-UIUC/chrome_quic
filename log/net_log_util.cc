@@ -500,9 +500,6 @@ NET_EXPORT scoped_ptr<base::DictionaryValue> GetNetInfo(
 NET_EXPORT void CreateNetLogEntriesForActiveObjects(
     const std::set<URLRequestContext*>& contexts,
     NetLog::ThreadSafeObserver* observer) {
-  // Not safe to call this when the observer is watching a NetLog.
-  DCHECK(!observer->net_log());
-
   // Put together the list of all requests.
   std::vector<const URLRequest*> requests;
   for (const auto& context : contexts) {
@@ -524,10 +521,12 @@ NET_EXPORT void CreateNetLogEntriesForActiveObjects(
     NetLog::ParametersCallback callback =
         base::Bind(&GetRequestStateAsValue, base::Unretained(request));
 
+    // Note that passing the hardcoded NetLogCaptureMode::Default() below is
+    // fine, since GetRequestStateAsValue() ignores the capture mode.
     NetLog::EntryData entry_data(
         NetLog::TYPE_REQUEST_ALIVE, request->net_log().source(),
         NetLog::PHASE_BEGIN, request->creation_time(), &callback);
-    NetLog::Entry entry(&entry_data, request->net_log().GetCaptureMode());
+    NetLog::Entry entry(&entry_data, NetLogCaptureMode::Default());
     observer->OnAddEntry(entry);
   }
 }

@@ -538,12 +538,12 @@
         'dns/mock_mdns_socket_factory.h',
         'http/http_transaction_test_util.cc',
         'http/http_transaction_test_util.h',
-        'log/captured_net_log_entry.cc',
-        'log/captured_net_log_entry.h',
         'log/test_net_log.cc',
         'log/test_net_log.h',
-        'log/capturing_net_log_observer.cc',
-        'log/capturing_net_log_observer.h',
+        'log/test_net_log_entry.cc',
+        'log/test_net_log_entry.h',
+        'log/test_net_log_util.cc',
+        'log/test_net_log_util.h',
         'proxy/mock_proxy_resolver.cc',
         'proxy/mock_proxy_resolver.h',
         'proxy/mock_proxy_script_fetcher.cc',
@@ -765,8 +765,8 @@
         'tools/balsa/split.cc',
         'tools/balsa/split.h',
         'tools/balsa/string_piece_utils.h',
-        'tools/quic/spdy_utils.cc',
-        'tools/quic/spdy_utils.h',
+        'tools/quic/spdy_balsa_utils.cc',
+        'tools/quic/spdy_balsa_utils.h',
       ],
     },
     {
@@ -1397,7 +1397,19 @@
           'variables': {
             'java_in_dir': '../net/test/android/javatests',
           },
+          'dependencies': [
+            'url_request_failed_job_java',
+            '../base/base.gyp:base_java'
+          ],
           'includes': [ '../build/java.gypi' ],
+        },
+        {
+          'target_name': 'url_request_failed_job_java',
+          'type': 'none',
+          'variables': {
+            'source_file': 'test/url_request/url_request_failed_job.h',
+          },
+          'includes': [ '../build/android/java_cpp_enum.gypi' ],
         },
         {
           'target_name': 'net_javatests',

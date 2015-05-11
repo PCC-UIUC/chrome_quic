@@ -58,6 +58,9 @@ IPAddressNumber Loopback4();
 // Returns an address for ::1.
 IPAddressNumber Loopback6();
 
+// Returns an address for 0.0.0.0.
+IPAddressNumber Any4();
+
 void GenerateBody(std::string* body, int length);
 
 // Create an encrypted packet for testing.
@@ -661,7 +664,7 @@ class TestWriterFactory : public tools::QuicDispatcher::PacketWriterFactory {
 class MockQuicConnectionDebugVisitor : public QuicConnectionDebugVisitor {
  public:
   MockQuicConnectionDebugVisitor();
-  ~MockQuicConnectionDebugVisitor();
+  ~MockQuicConnectionDebugVisitor() override;
 
   MOCK_METHOD1(OnFrameAddedToPacket, void(const QuicFrame&));
 

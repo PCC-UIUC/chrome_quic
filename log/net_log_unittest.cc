@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "net/log/net_log_unittest.h"
+#include "net/log/net_log.h"
 
 #include "base/bind.h"
 #include "base/memory/scoped_vector.h"
@@ -10,6 +10,9 @@
 #include "base/threading/simple_thread.h"
 #include "base/values.h"
 #include "net/base/net_errors.h"
+#include "net/log/test_net_log.h"
+#include "net/log/test_net_log_entry.h"
+#include "net/log/test_net_log_util.h"
 
 namespace net {
 
@@ -18,8 +21,23 @@ namespace {
 const int kThreads = 10;
 const int kEvents = 100;
 
+// Under the hood a NetLogCaptureMode is simply an int. But for layering reasons
+// this internal value is not exposed. These tests need to serialize a
+// NetLogCaptureMode to a base::Value, so create our own private mapping.
+int CaptureModeToInt(NetLogCaptureMode capture_mode) {
+  if (capture_mode == NetLogCaptureMode::Default())
+    return 0;
+  if (capture_mode == NetLogCaptureMode::IncludeCookiesAndCredentials())
+    return 1;
+  if (capture_mode == NetLogCaptureMode::IncludeSocketBytes())
+    return 2;
+
+  ADD_FAILURE() << "Unknown capture mode";
+  return -1;
+}
+
 base::Value* CaptureModeToValue(NetLogCaptureMode capture_mode) {
-  return new base::FundamentalValue(capture_mode.ToInternalValueForTesting());
+  return new base::FundamentalValue(CaptureModeToInt(capture_mode));
 }
 
 base::Value* NetCaptureModeCallback(NetLogCaptureMode capture_mode) {
@@ -30,7 +48,7 @@ base::Value* NetCaptureModeCallback(NetLogCaptureMode capture_mode) {
 
 TEST(NetLogTest, Basic) {
   TestNetLog net_log;
-  CapturedNetLogEntry::List entries;
+  TestNetLogEntry::List entries;
   net_log.GetEntries(&entries);
   EXPECT_EQ(0u, entries.size());
 
@@ -58,12 +76,12 @@ TEST(NetLogTest, CaptureModes) {
 
   for (NetLogCaptureMode mode : kModes) {
     net_log.SetCaptureMode(mode);
-    EXPECT_EQ(mode, net_log.GetCaptureMode());
+    EXPECT_EQ(mode, net_log.GetObserver()->capture_mode());
 
     net_log.AddGlobalEntry(NetLog::TYPE_SOCKET_ALIVE,
                            base::Bind(NetCaptureModeCallback));
 
-    CapturedNetLogEntry::List entries;
+    TestNetLogEntry::List entries;
     net_log.GetEntries(&entries);
 
     ASSERT_EQ(1u, entries.size());
@@ -76,7 +94,7 @@ TEST(NetLogTest, CaptureModes) {
     int logged_capture_mode;
     ASSERT_TRUE(
         entries[0].GetIntegerValue("capture_mode", &logged_capture_mode));
-    EXPECT_EQ(mode.ToInternalValueForTesting(), logged_capture_mode);
+    EXPECT_EQ(CaptureModeToInt(mode), logged_capture_mode);
 
     net_log.Clear();
   }
@@ -258,16 +276,16 @@ TEST(NetLogTest, NetLogAddRemoveObserver) {
   AddEvent(&net_log);
   EXPECT_EQ(0, observer.count());
   EXPECT_EQ(NULL, observer.net_log());
-  EXPECT_FALSE(net_log.GetCaptureMode().enabled());
+  EXPECT_FALSE(net_log.IsCapturing());
 
   // Add the observer and add an event.
   net_log.DeprecatedAddObserver(
       &observer, NetLogCaptureMode::IncludeCookiesAndCredentials());
+  EXPECT_TRUE(net_log.IsCapturing());
   EXPECT_EQ(&net_log, observer.net_log());
   EXPECT_EQ(NetLogCaptureMode::IncludeCookiesAndCredentials(),
             observer.capture_mode());
-  EXPECT_EQ(NetLogCaptureMode::IncludeCookiesAndCredentials(),
-            net_log.GetCaptureMode());
+  EXPECT_TRUE(net_log.IsCapturing());
 
   AddEvent(&net_log);
   EXPECT_EQ(1, observer.count());
@@ -277,7 +295,7 @@ TEST(NetLogTest, NetLogAddRemoveObserver) {
                                  NetLogCaptureMode::IncludeSocketBytes());
   EXPECT_EQ(&net_log, observer.net_log());
   EXPECT_EQ(NetLogCaptureMode::IncludeSocketBytes(), observer.capture_mode());
-  EXPECT_EQ(NetLogCaptureMode::IncludeSocketBytes(), net_log.GetCaptureMode());
+  EXPECT_TRUE(net_log.IsCapturing());
 
   AddEvent(&net_log);
   EXPECT_EQ(2, observer.count());
@@ -285,7 +303,7 @@ TEST(NetLogTest, NetLogAddRemoveObserver) {
   // Remove observer and add an event.
   net_log.DeprecatedRemoveObserver(&observer);
   EXPECT_EQ(NULL, observer.net_log());
-  EXPECT_FALSE(net_log.GetCaptureMode().enabled());
+  EXPECT_FALSE(net_log.IsCapturing());
 
   AddEvent(&net_log);
   EXPECT_EQ(2, observer.count());
@@ -295,7 +313,7 @@ TEST(NetLogTest, NetLogAddRemoveObserver) {
                                 NetLogCaptureMode::IncludeSocketBytes());
   EXPECT_EQ(&net_log, observer.net_log());
   EXPECT_EQ(NetLogCaptureMode::IncludeSocketBytes(), observer.capture_mode());
-  EXPECT_EQ(NetLogCaptureMode::IncludeSocketBytes(), net_log.GetCaptureMode());
+  EXPECT_TRUE(net_log.IsCapturing());
 
   AddEvent(&net_log);
   EXPECT_EQ(3, observer.count());
@@ -313,8 +331,7 @@ TEST(NetLogTest, NetLogTwoObservers) {
   EXPECT_EQ(NULL, observer[1].net_log());
   EXPECT_EQ(NetLogCaptureMode::IncludeCookiesAndCredentials(),
             observer[0].capture_mode());
-  EXPECT_EQ(NetLogCaptureMode::IncludeCookiesAndCredentials(),
-            net_log.GetCaptureMode());
+  EXPECT_TRUE(net_log.IsCapturing());
 
   // Add second observer observer.
   net_log.DeprecatedAddObserver(&observer[1],
@@ -325,7 +342,7 @@ TEST(NetLogTest, NetLogTwoObservers) {
             observer[0].capture_mode());
   EXPECT_EQ(NetLogCaptureMode::IncludeSocketBytes(),
             observer[1].capture_mode());
-  EXPECT_EQ(NetLogCaptureMode::IncludeSocketBytes(), net_log.GetCaptureMode());
+  EXPECT_TRUE(net_log.IsCapturing());
 
   // Add event and make sure both observers receive it at their respective log
   // levels.
@@ -333,10 +350,10 @@ TEST(NetLogTest, NetLogTwoObservers) {
   AddEvent(&net_log);
   ASSERT_EQ(1U, observer[0].GetNumValues());
   ASSERT_TRUE(observer[0].GetValue(0)->GetInteger("params", &param));
-  EXPECT_EQ(observer[0].capture_mode().ToInternalValueForTesting(), param);
+  EXPECT_EQ(CaptureModeToInt(observer[0].capture_mode()), param);
   ASSERT_EQ(1U, observer[1].GetNumValues());
   ASSERT_TRUE(observer[1].GetValue(0)->GetInteger("params", &param));
-  EXPECT_EQ(observer[1].capture_mode().ToInternalValueForTesting(), param);
+  EXPECT_EQ(CaptureModeToInt(observer[1].capture_mode()), param);
 
   // Remove second observer.
   net_log.DeprecatedRemoveObserver(&observer[1]);
@@ -344,8 +361,7 @@ TEST(NetLogTest, NetLogTwoObservers) {
   EXPECT_EQ(NULL, observer[1].net_log());
   EXPECT_EQ(NetLogCaptureMode::IncludeCookiesAndCredentials(),
             observer[0].capture_mode());
-  EXPECT_EQ(NetLogCaptureMode::IncludeCookiesAndCredentials(),
-            net_log.GetCaptureMode());
+  EXPECT_TRUE(net_log.IsCapturing());
 
   // Add event and make sure only second observer gets it.
   AddEvent(&net_log);
@@ -356,7 +372,7 @@ TEST(NetLogTest, NetLogTwoObservers) {
   net_log.DeprecatedRemoveObserver(&observer[0]);
   EXPECT_EQ(NULL, observer[0].net_log());
   EXPECT_EQ(NULL, observer[1].net_log());
-  EXPECT_FALSE(net_log.GetCaptureMode().enabled());
+  EXPECT_FALSE(net_log.IsCapturing());
 
   // Add event and make sure neither observer gets it.
   AddEvent(&net_log);

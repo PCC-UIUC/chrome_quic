@@ -19,9 +19,9 @@
 #include "net/http/http_stream_factory.h"
 #include "net/http/http_transaction_test_util.h"
 #include "net/http/transport_security_state.h"
-#include "net/log/captured_net_log_entry.h"
-#include "net/log/net_log_unittest.h"
 #include "net/log/test_net_log.h"
+#include "net/log/test_net_log_entry.h"
+#include "net/log/test_net_log_util.h"
 #include "net/proxy/proxy_config_service_fixed.h"
 #include "net/proxy/proxy_resolver.h"
 #include "net/proxy/proxy_service.h"
@@ -413,7 +413,7 @@ TEST_P(QuicNetworkTransactionTest, ForceQuic) {
   SendRequestAndExpectQuicResponse("hello!");
 
   // Check that the NetLog was filled reasonably.
-  CapturedNetLogEntry::List entries;
+  TestNetLogEntry::List entries;
   net_log_.GetEntries(&entries);
   EXPECT_LT(0u, entries.size());
 
@@ -663,7 +663,7 @@ TEST_P(QuicNetworkTransactionTest, UseAlternateProtocolProbabilityForQuic) {
   // the alternate-protocol job will "win".
   AddHangingNonAlternateProtocolSocketData();
 
-  params_.alternate_protocol_probability_threshold = .25;
+  params_.alternative_service_probability_threshold = .25;
   CreateSessionWithNextProtos();
 
   SendRequestAndExpectHttpResponse("hello world");
@@ -684,7 +684,7 @@ TEST_P(QuicNetworkTransactionTest, DontUseAlternateProtocolProbabilityForQuic) {
   socket_factory_.AddSocketDataProvider(&http_data);
   socket_factory_.AddSocketDataProvider(&http_data);
 
-  params_.alternate_protocol_probability_threshold = .75;
+  params_.alternative_service_probability_threshold = .75;
   CreateSessionWithNextProtos();
 
   SendRequestAndExpectHttpResponse("hello world");
@@ -706,7 +706,7 @@ TEST_P(QuicNetworkTransactionTest,
   socket_factory_.AddSocketDataProvider(&http_data);
   socket_factory_.AddSocketDataProvider(&http_data);
 
-  params_.alternate_protocol_probability_threshold = .75;
+  params_.alternative_service_probability_threshold = .75;
   CreateSessionWithNextProtos();
 
   SendRequestAndExpectHttpResponse("hello world");

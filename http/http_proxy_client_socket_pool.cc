@@ -7,7 +7,6 @@
 #include <algorithm>
 
 #include "base/compiler_specific.h"
-#include "base/profiler/scoped_tracker.h"
 #include "base/time/time.h"
 #include "base/values.h"
 #include "net/base/load_flags.h"
@@ -127,10 +126,6 @@ void HttpProxyConnectJob::GetAdditionalErrorState(ClientSocketHandle * handle) {
 }
 
 void HttpProxyConnectJob::OnIOComplete(int result) {
-  // TODO(pkasting): Remove ScopedTracker below once crbug.com/455884 is fixed.
-  tracked_objects::ScopedTracker tracking_profile(
-      FROM_HERE_WITH_EXPLICIT_FUNCTION(
-          "455884 HttpProxyConnectJob::OnIOComplete"));
   int rv = DoLoop(result);
   if (rv != ERR_IO_PENDING) {
     NotifyProxyDelegateOfCompletion(rv);
@@ -259,8 +254,8 @@ int HttpProxyConnectJob::DoSSLConnectComplete(int result) {
 
   SSLClientSocket* ssl =
       static_cast<SSLClientSocket*>(transport_socket_handle_->socket());
-  using_spdy_ = ssl->was_spdy_negotiated();
   protocol_negotiated_ = ssl->GetNegotiatedProtocol();
+  using_spdy_ = NextProtoIsSPDY(protocol_negotiated_);
 
   // Reset the timer to just the length of time allowed for HttpProxy handshake
   // so that a fast SSL connection plus a slow HttpProxy failure doesn't take

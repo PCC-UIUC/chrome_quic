@@ -58,10 +58,10 @@
 #include "net/http/http_request_headers.h"
 #include "net/http/http_response_headers.h"
 #include "net/http/http_util.h"
-#include "net/log/captured_net_log_entry.h"
 #include "net/log/net_log.h"
-#include "net/log/net_log_unittest.h"
 #include "net/log/test_net_log.h"
+#include "net/log/test_net_log_entry.h"
+#include "net/log/test_net_log_util.h"
 #include "net/proxy/proxy_service.h"
 #include "net/socket/ssl_client_socket.h"
 #include "net/ssl/ssl_cipher_suite_names.h"
@@ -2134,21 +2134,22 @@ TEST_F(URLRequestTest, PriorityIgnoreLimits) {
 
 // TODO(droger): Support SpawnedTestServer on iOS (see http://crbug.com/148666).
 #if !defined(OS_IOS)
-// A subclass of SpawnedTestServer that uses a statically-configured hostname.
-// This is to work around mysterious failures in chrome_frame_net_tests. See:
-// http://crbug.com/114369
-// TODO(erikwright): remove or update as needed; see http://crbug.com/334634.
+namespace {
+
+// Less verbose way of running a simple testserver for the tests below.
 class LocalHttpTestServer : public SpawnedTestServer {
  public:
   explicit LocalHttpTestServer(const base::FilePath& document_root)
       : SpawnedTestServer(SpawnedTestServer::TYPE_HTTP,
-                          ScopedCustomUrlRequestTestHttpHost::value(),
+                          SpawnedTestServer::kLocalhost,
                           document_root) {}
   LocalHttpTestServer()
       : SpawnedTestServer(SpawnedTestServer::TYPE_HTTP,
-                          ScopedCustomUrlRequestTestHttpHost::value(),
+                          SpawnedTestServer::kLocalhost,
                           base::FilePath()) {}
 };
+
+}  // namespace
 
 TEST_F(URLRequestTest, DelayedCookieCallback) {
   LocalHttpTestServer test_server;
@@ -4164,7 +4165,7 @@ class AsyncDelegateLogger : public base::RefCounted<AsyncDelegateLogger> {
   // DELEGATE_INFO NetLog events that an AsyncDelegateLogger should have
   // recorded.  Returns the index of entry after the expected number of
   // events this logged, or entries.size() if there aren't enough entries.
-  static size_t CheckDelegateInfo(const CapturedNetLogEntry::List& entries,
+  static size_t CheckDelegateInfo(const TestNetLogEntry::List& entries,
                                   size_t log_position) {
     // There should be 4 DELEGATE_INFO events: Two begins and two ends.
     if (log_position + 3 >= entries.size()) {
@@ -4198,9 +4199,8 @@ class AsyncDelegateLogger : public base::RefCounted<AsyncDelegateLogger> {
 
   // Find delegate request begin and end messages for OnBeforeNetworkStart.
   // Returns the position of the end message.
-  static size_t ExpectBeforeNetworkEvents(
-      const CapturedNetLogEntry::List& entries,
-      size_t log_position) {
+  static size_t ExpectBeforeNetworkEvents(const TestNetLogEntry::List& entries,
+                                          size_t log_position) {
     log_position =
         ExpectLogContainsSomewhereAfter(entries,
                                         log_position,
@@ -4466,7 +4466,7 @@ TEST_F(URLRequestTestHTTP, DelegateInfoBeforeStart) {
     EXPECT_EQ(URLRequestStatus::SUCCESS, r->status().status());
   }
 
-  CapturedNetLogEntry::List entries;
+  TestNetLogEntry::List entries;
   net_log_.GetEntries(&entries);
   size_t log_position = ExpectLogContainsSomewhereAfter(
       entries,
@@ -4511,7 +4511,7 @@ TEST_F(URLRequestTestHTTP, NetworkDelegateInfo) {
   EXPECT_EQ(1, network_delegate.destroyed_requests());
 
   size_t log_position = 0;
-  CapturedNetLogEntry::List entries;
+  TestNetLogEntry::List entries;
   net_log_.GetEntries(&entries);
   for (size_t i = 0; i < 3; ++i) {
     log_position = ExpectLogContainsSomewhereAfter(
@@ -4568,7 +4568,7 @@ TEST_F(URLRequestTestHTTP, NetworkDelegateInfoRedirect) {
   EXPECT_EQ(1, network_delegate.destroyed_requests());
 
   size_t log_position = 0;
-  CapturedNetLogEntry::List entries;
+  TestNetLogEntry::List entries;
   net_log_.GetEntries(&entries);
   // The NetworkDelegate logged information in OnBeforeURLRequest,
   // OnBeforeSendHeaders, and OnHeadersReceived.
@@ -4650,7 +4650,7 @@ TEST_F(URLRequestTestHTTP, NetworkDelegateInfoAuth) {
   EXPECT_EQ(1, network_delegate.destroyed_requests());
 
   size_t log_position = 0;
-  CapturedNetLogEntry::List entries;
+  TestNetLogEntry::List entries;
   net_log_.GetEntries(&entries);
   // The NetworkDelegate should have logged information in OnBeforeURLRequest,
   // OnBeforeSendHeaders, OnHeadersReceived, OnAuthRequired, and then again in
@@ -4707,7 +4707,7 @@ TEST_F(URLRequestTestHTTP, URLRequestDelegateInfo) {
     EXPECT_EQ(URLRequestStatus::SUCCESS, r->status().status());
   }
 
-  CapturedNetLogEntry::List entries;
+  TestNetLogEntry::List entries;
   net_log_.GetEntries(&entries);
 
   size_t log_position = 0;
@@ -4760,7 +4760,7 @@ TEST_F(URLRequestTestHTTP, URLRequestDelegateInfoOnRedirect) {
     EXPECT_EQ(URLRequestStatus::SUCCESS, r->status().status());
   }
 
-  CapturedNetLogEntry::List entries;
+  TestNetLogEntry::List entries;
   net_log_.GetEntries(&entries);
 
   // Delegate info should only have been logged in OnReceivedRedirect and
@@ -4822,7 +4822,7 @@ TEST_F(URLRequestTestHTTP, URLRequestDelegateOnRedirectCancelled) {
       EXPECT_EQ(URLRequestStatus::CANCELED, r->status().status());
     }
 
-    CapturedNetLogEntry::List entries;
+    TestNetLogEntry::List entries;
     net_log.GetEntries(&entries);
 
     // Delegate info is always logged in both OnReceivedRedirect and
@@ -7302,7 +7302,7 @@ TEST_F(HTTPSRequestTest, CipherFallbackTest) {
   EXPECT_EQ(expected_version,
             SSLConnectionStatusToVersion(r->ssl_info().connection_status));
 
-  CapturedNetLogEntry::List entries;
+  TestNetLogEntry::List entries;
   net_log.GetEntries(&entries);
   ExpectLogContainsSomewhere(entries, 0, NetLog::TYPE_SSL_CIPHER_FALLBACK,
                              NetLog::PHASE_NONE);

@@ -295,6 +295,9 @@ void HttpStreamFactoryImpl::Job::OnStreamReadyCallback() {
   DCHECK(stream_.get());
   DCHECK(!IsPreconnecting());
   DCHECK(!stream_factory_->for_websockets_);
+
+  MaybeCopyConnectionAttemptsFromClientSocketHandleToRequest();
+
   if (IsOrphaned()) {
     stream_factory_->OnOrphanedJobComplete(this);
   } else {
@@ -315,6 +318,9 @@ void HttpStreamFactoryImpl::Job::OnWebSocketHandshakeStreamReadyCallback() {
   // An orphaned WebSocket job will be closed immediately and
   // never be ready.
   DCHECK(!IsOrphaned());
+
+  MaybeCopyConnectionAttemptsFromClientSocketHandleToRequest();
+
   request_->Complete(was_npn_negotiated(),
                      protocol_negotiated(),
                      using_spdy(),
@@ -335,6 +341,8 @@ void HttpStreamFactoryImpl::Job::OnNewSpdySessionReadyCallback() {
   base::WeakPtr<SpdySession> spdy_session = new_spdy_session_;
   new_spdy_session_.reset();
 
+  MaybeCopyConnectionAttemptsFromClientSocketHandleToRequest();
+
   // TODO(jgraettinger): Notify the factory, and let that notify |request_|,
   // rather than notifying |request_| directly.
   if (IsOrphaned()) {
@@ -353,6 +361,9 @@ void HttpStreamFactoryImpl::Job::OnNewSpdySessionReadyCallback() {
 
 void HttpStreamFactoryImpl::Job::OnStreamFailedCallback(int result) {
   DCHECK(!IsPreconnecting());
+
+  MaybeCopyConnectionAttemptsFromClientSocketHandleToRequest();
+
   if (IsOrphaned())
     stream_factory_->OnOrphanedJobComplete(this);
   else
@@ -363,6 +374,9 @@ void HttpStreamFactoryImpl::Job::OnStreamFailedCallback(int result) {
 void HttpStreamFactoryImpl::Job::OnCertificateErrorCallback(
     int result, const SSLInfo& ssl_info) {
   DCHECK(!IsPreconnecting());
+
+  MaybeCopyConnectionAttemptsFromClientSocketHandleToRequest();
+
   if (IsOrphaned())
     stream_factory_->OnOrphanedJobComplete(this);
   else
@@ -435,10 +449,6 @@ int HttpStreamFactoryImpl::Job::OnHostResolution(
 }
 
 void HttpStreamFactoryImpl::Job::OnIOComplete(int result) {
-  // TODO(pkasting): Remove ScopedTracker below once crbug.com/455884 is fixed.
-  tracked_objects::ScopedTracker tracking_profile(
-      FROM_HERE_WITH_EXPLICIT_FUNCTION(
-          "455884 HttpStreamFactoryImpl::Job::OnIOComplete"));
   RunLoop(result);
 }
 
@@ -539,9 +549,14 @@ int HttpStreamFactoryImpl::Job::RunLoop(int result) {
       return ERR_IO_PENDING;
 
     default:
+      DCHECK(result != ERR_ALTERNATIVE_CERT_NOT_VALID_FOR_ORIGIN ||
+             IsSpdyAlternate());
       if (job_status_ != STATUS_BROKEN) {
         DCHECK_EQ(STATUS_RUNNING, job_status_);
         job_status_ = STATUS_FAILED;
+        // TODO(bnc): If (result == ERR_ALTERNATIVE_CERT_NOT_VALID_FOR_ORIGIN),
+        // then instead of marking alternative service broken, mark (origin,
+        // alternative service) couple as invalid.
         MaybeMarkAlternativeServiceBroken();
       }
       base::MessageLoop::current()->PostTask(
@@ -626,6 +641,8 @@ int HttpStreamFactoryImpl::Job::DoStart() {
   }
   origin_url_ =
       stream_factory_->ApplyHostMappingRules(request_info_.url, &server_);
+  valid_spdy_session_pool_.reset(new ValidSpdySessionPool(
+      session_->spdy_session_pool(), origin_url_, IsSpdyAlternate()));
 
   net_log_.BeginEvent(
       NetLog::TYPE_HTTP_STREAM_JOB,
@@ -805,9 +822,11 @@ int HttpStreamFactoryImpl::Job::DoInitConnection() {
   // Check first if we have a spdy session for this group.  If so, then go
   // straight to using that.
   if (CanUseExistingSpdySession()) {
-    base::WeakPtr<SpdySession> spdy_session =
-        session_->spdy_session_pool()->FindAvailableSession(spdy_session_key,
-                                                            net_log_);
+    base::WeakPtr<SpdySession> spdy_session;
+    int result = valid_spdy_session_pool_->FindAvailableSession(
+        spdy_session_key, net_log_, &spdy_session);
+    if (result != OK)
+      return result;
     if (spdy_session) {
       // If we're preconnecting, but we already have a SpdySession, we don't
       // actually need to preconnect any sockets, so we're done.
@@ -948,9 +967,8 @@ int HttpStreamFactoryImpl::Job::DoInitConnectionComplete(int result) {
   if (ssl_started && (result == OK || IsCertificateError(result))) {
     if (using_quic_ && result == OK) {
       was_npn_negotiated_ = true;
-      NextProto protocol_negotiated =
+      protocol_negotiated_ =
           SSLClientSocket::NextProtoFromString("quic/1+spdy/3");
-      protocol_negotiated_ = protocol_negotiated;
     } else {
       SSLClientSocket* ssl_socket =
           static_cast<SSLClientSocket*>(connection_->socket());
@@ -959,14 +977,12 @@ int HttpStreamFactoryImpl::Job::DoInitConnectionComplete(int result) {
         std::string proto;
         SSLClientSocket::NextProtoStatus status =
             ssl_socket->GetNextProto(&proto);
-        NextProto protocol_negotiated =
-            SSLClientSocket::NextProtoFromString(proto);
-        protocol_negotiated_ = protocol_negotiated;
+        protocol_negotiated_ = SSLClientSocket::NextProtoFromString(proto);
         net_log_.AddEvent(
             NetLog::TYPE_HTTP_STREAM_REQUEST_PROTO,
             base::Bind(&NetLogHttpStreamProtoCallback,
                        status, &proto));
-        if (ssl_socket->was_spdy_negotiated())
+        if (NextProtoIsSPDY(protocol_negotiated_))
           SwitchToSpdyMode();
       }
     }
@@ -994,8 +1010,17 @@ int HttpStreamFactoryImpl::Job::DoInitConnectionComplete(int result) {
     return result;
   }
 
+  if (IsSpdyAlternate() && !using_spdy_) {
+    job_status_ = STATUS_BROKEN;
+    MaybeMarkAlternativeServiceBroken();
+    return ERR_NPN_NEGOTIATION_FAILED;
+  }
+
   if (!ssl_started && result < 0 && IsAlternate()) {
     job_status_ = STATUS_BROKEN;
+    // TODO(bnc): if (result == ERR_ALTERNATIVE_CERT_NOT_VALID_FOR_ORIGIN), then
+    // instead of marking alternative service broken, mark (origin, alternative
+    // service) couple as invalid.
     MaybeMarkAlternativeServiceBroken();
     return result;
   }
@@ -1078,6 +1103,8 @@ int HttpStreamFactoryImpl::Job::DoCreateStream() {
       FROM_HERE_WITH_EXPLICIT_FUNCTION(
           "462811 HttpStreamFactoryImpl::Job::DoCreateStream"));
   DCHECK(connection_->socket() || existing_spdy_session_.get() || using_quic_);
+  if (IsAlternate())
+    DCHECK(IsSpdyAlternate());
 
   next_state_ = STATE_CREATE_STREAM_COMPLETE;
 
@@ -1088,6 +1115,7 @@ int HttpStreamFactoryImpl::Job::DoCreateStream() {
     SetSocketMotivation();
 
   if (!using_spdy_) {
+    DCHECK(!IsSpdyAlternate());
     // We may get ftp scheme when fetching ftp resources through proxy.
     bool using_proxy = (proxy_info_.is_http() || proxy_info_.is_https()) &&
                        (request_info_.url.SchemeIs("http") ||
@@ -1118,21 +1146,24 @@ int HttpStreamFactoryImpl::Job::DoCreateStream() {
     return set_result;
   }
 
-  SpdySessionPool* spdy_pool = session_->spdy_session_pool();
   SpdySessionKey spdy_session_key = GetSpdySessionKey();
-  base::WeakPtr<SpdySession> spdy_session =
-      spdy_pool->FindAvailableSession(spdy_session_key, net_log_);
-
+  base::WeakPtr<SpdySession> spdy_session;
+  int result = valid_spdy_session_pool_->FindAvailableSession(
+      spdy_session_key, net_log_, &spdy_session);
+  if (result != OK) {
+    return result;
+  }
   if (spdy_session) {
     return SetSpdyHttpStream(spdy_session, direct);
   }
 
-  spdy_session =
-      spdy_pool->CreateAvailableSessionFromSocket(spdy_session_key,
-                                                  connection_.Pass(),
-                                                  net_log_,
-                                                  spdy_certificate_error_,
-                                                  using_ssl_);
+  result = valid_spdy_session_pool_->CreateAvailableSessionFromSocket(
+      spdy_session_key, connection_.Pass(), net_log_, spdy_certificate_error_,
+      using_ssl_, &spdy_session);
+  if (result != OK) {
+    return result;
+  }
+
   if (!spdy_session->HasAcceptableTransportSecurity()) {
     spdy_session->CloseSessionOnError(
         ERR_SPDY_INADEQUATE_TRANSPORT_SECURITY, "");
@@ -1245,47 +1276,6 @@ void HttpStreamFactoryImpl::Job::InitSSLConfig(const HostPortPair& server,
     // client certificate during the initial handshake.
     // http://crbug.com/59292
     ssl_config->false_start_enabled = false;
-  }
-
-  enum {
-    FALLBACK_NONE = 0,    // SSL version fallback did not occur.
-    FALLBACK_SSL3 = 1,    // Fell back to SSL 3.0.
-    FALLBACK_TLS1 = 2,    // Fell back to TLS 1.0.
-    FALLBACK_TLS1_1 = 3,  // Fell back to TLS 1.1.
-    FALLBACK_MAX
-  };
-
-  int fallback = FALLBACK_NONE;
-  if (ssl_config->version_fallback) {
-    switch (ssl_config->version_max) {
-      case SSL_PROTOCOL_VERSION_SSL3:
-        fallback = FALLBACK_SSL3;
-        break;
-      case SSL_PROTOCOL_VERSION_TLS1:
-        fallback = FALLBACK_TLS1;
-        break;
-      case SSL_PROTOCOL_VERSION_TLS1_1:
-        fallback = FALLBACK_TLS1_1;
-        break;
-    }
-  }
-  UMA_HISTOGRAM_ENUMERATION("Net.ConnectionUsedSSLVersionFallback",
-                            fallback, FALLBACK_MAX);
-
-  UMA_HISTOGRAM_BOOLEAN("Net.ConnectionUsedSSLDeprecatedCipherFallback",
-                        ssl_config->enable_deprecated_cipher_suites);
-
-  // We also wish to measure the amount of fallback connections for a host that
-  // we know implements TLS up to 1.2. Ideally there would be no fallback here
-  // but high numbers of SSLv3 would suggest that SSLv3 fallback is being
-  // caused by network middleware rather than buggy HTTPS servers.
-  const std::string& host = server.host();
-  if (!is_proxy &&
-      host.size() >= 10 &&
-      host.compare(host.size() - 10, 10, "google.com") == 0 &&
-      (host.size() == 10 || host[host.size()-11] == '.')) {
-    UMA_HISTOGRAM_ENUMERATION("Net.GoogleConnectionUsedSSLVersionFallback",
-                              fallback, FALLBACK_MAX);
   }
 
   if (request_info_.load_flags & LOAD_VERIFY_EV_CERT)
@@ -1468,6 +1458,48 @@ void HttpStreamFactoryImpl::Job::MaybeMarkAlternativeServiceBroken() {
   }
 }
 
+HttpStreamFactoryImpl::Job::ValidSpdySessionPool::ValidSpdySessionPool(
+    SpdySessionPool* spdy_session_pool,
+    GURL& origin_url,
+    bool is_spdy_alternate)
+    : spdy_session_pool_(spdy_session_pool),
+      origin_url_(origin_url),
+      is_spdy_alternate_(is_spdy_alternate) {
+}
+
+int HttpStreamFactoryImpl::Job::ValidSpdySessionPool::FindAvailableSession(
+    const SpdySessionKey& key,
+    const BoundNetLog& net_log,
+    base::WeakPtr<SpdySession>* spdy_session) {
+  *spdy_session = spdy_session_pool_->FindAvailableSession(key, net_log);
+  return CheckAlternativeServiceValidityForOrigin(*spdy_session);
+}
+
+int HttpStreamFactoryImpl::Job::ValidSpdySessionPool::
+    CreateAvailableSessionFromSocket(const SpdySessionKey& key,
+                                     scoped_ptr<ClientSocketHandle> connection,
+                                     const BoundNetLog& net_log,
+                                     int certificate_error_code,
+                                     bool is_secure,
+                                     base::WeakPtr<SpdySession>* spdy_session) {
+  *spdy_session = spdy_session_pool_->CreateAvailableSessionFromSocket(
+      key, connection.Pass(), net_log, certificate_error_code, is_secure);
+  return CheckAlternativeServiceValidityForOrigin(*spdy_session);
+}
+
+int HttpStreamFactoryImpl::Job::ValidSpdySessionPool::
+    CheckAlternativeServiceValidityForOrigin(
+        base::WeakPtr<SpdySession> spdy_session) {
+  // For a SPDY alternate Job, server_.host() might be different than
+  // origin_url_.host(), therefore it needs to be verified that the former
+  // provides a certificate that is valid for the latter.
+  if (!is_spdy_alternate_ || !spdy_session ||
+      spdy_session->VerifyDomainAuthentication(origin_url_.host())) {
+    return OK;
+  }
+  return ERR_ALTERNATIVE_CERT_NOT_VALID_FOR_ORIGIN;
+}
+
 ClientSocketPoolManager::SocketGroupType
 HttpStreamFactoryImpl::Job::GetSocketGroup() const {
   std::string scheme = origin_url_.scheme();
@@ -1478,6 +1510,14 @@ HttpStreamFactoryImpl::Job::GetSocketGroup() const {
     return ClientSocketPoolManager::FTP_GROUP;
 
   return ClientSocketPoolManager::NORMAL_GROUP;
+}
+
+void HttpStreamFactoryImpl::Job::
+    MaybeCopyConnectionAttemptsFromClientSocketHandleToRequest() {
+  if (IsOrphaned() || !connection_)
+    return;
+
+  request_->AddConnectionAttempts(connection_->connection_attempts());
 }
 
 }  // namespace net

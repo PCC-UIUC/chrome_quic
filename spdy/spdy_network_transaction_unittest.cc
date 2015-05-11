@@ -25,9 +25,9 @@
 #include "net/http/http_network_transaction.h"
 #include "net/http/http_server_properties.h"
 #include "net/http/http_transaction_test_util.h"
-#include "net/log/captured_net_log_entry.h"
-#include "net/log/net_log_unittest.h"
 #include "net/log/test_net_log.h"
+#include "net/log/test_net_log_entry.h"
+#include "net/log/test_net_log_util.h"
 #include "net/socket/client_socket_pool_base.h"
 #include "net/socket/next_proto.h"
 #include "net/spdy/buffered_spdy_framer.h"
@@ -3326,14 +3326,6 @@ TEST_P(SpdyNetworkTransactionTest, SynReplyHeadersVary) {
     EXPECT_EQ("hello!", out.response_data) << i;
 
     // Test the response information.
-    EXPECT_TRUE(out.response_info.response_time >
-                out.response_info.request_time) << i;
-    base::TimeDelta test_delay = out.response_info.response_time -
-                                 out.response_info.request_time;
-    base::TimeDelta min_expected_delay;
-    min_expected_delay.FromMilliseconds(10);
-    EXPECT_GT(test_delay.InMillisecondsF(),
-              min_expected_delay.InMillisecondsF()) << i;
     EXPECT_EQ(out.response_info.vary_data.is_valid(),
               test_cases[i].vary_matches) << i;
 
@@ -3678,7 +3670,7 @@ TEST_P(SpdyNetworkTransactionTest, NetLog) {
   // This test is intentionally non-specific about the exact ordering of the
   // log; instead we just check to make sure that certain events exist, and that
   // they are in the right order.
-  CapturedNetLogEntry::List entries;
+  TestNetLogEntry::List entries;
   log.GetEntries(&entries);
 
   EXPECT_LT(0u, entries.size());

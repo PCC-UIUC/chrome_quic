@@ -752,7 +752,7 @@ bool QuicConnection::ValidateAckFrame(const QuicAckFrame& incoming_ack) {
 
   if (!incoming_ack.missing_packets.empty() &&
       *incoming_ack.missing_packets.begin() <
-      sent_packet_manager_.least_packet_awaited_by_peer()) {
+          sent_packet_manager_.least_packet_awaited_by_peer()) {
     DLOG(ERROR) << ENDPOINT << "Peer sent missing packet: "
                 << *incoming_ack.missing_packets.begin()
                 << " which is smaller than least_packet_awaited_by_peer_: "
@@ -768,10 +768,8 @@ bool QuicConnection::ValidateAckFrame(const QuicAckFrame& incoming_ack) {
     return false;
   }
 
-  for (SequenceNumberSet::const_iterator iter =
-           incoming_ack.revived_packets.begin();
-       iter != incoming_ack.revived_packets.end(); ++iter) {
-    if (!ContainsKey(incoming_ack.missing_packets, *iter)) {
+  for (QuicPacketSequenceNumber revived_packet : incoming_ack.revived_packets) {
+    if (!ContainsKey(incoming_ack.missing_packets, revived_packet)) {
       DLOG(ERROR) << ENDPOINT
                   << "Peer specified revived packet which was not missing.";
       return false;
@@ -1140,9 +1138,6 @@ void QuicConnection::SendRstStream(QuicStreamId id,
   ScopedPacketBundler ack_bundler(this, BUNDLE_PENDING_ACK);
   packet_generator_.AddControlFrame(QuicFrame(new QuicRstStreamFrame(
       id, AdjustErrorForVersion(error, version()), bytes_written)));
-  if (!FLAGS_quic_do_not_retransmit_for_reset_streams) {
-    return;
-  }
 
   sent_packet_manager_.CancelRetransmissionsForStream(id);
   // Remove all queued packets which only contain data for the reset stream.
@@ -1372,8 +1367,10 @@ void QuicConnection::WritePendingRetransmissions() {
     // TODO(ianswett): Implement ReserializeAllFrames as a separate path that
     // does not require the creator to be flushed.
     packet_generator_.FlushAllQueuedFrames();
+    char buffer[kMaxPacketSize];
     SerializedPacket serialized_packet = packet_generator_.ReserializeAllFrames(
-        pending.retransmittable_frames, pending.sequence_number_length);
+        pending.retransmittable_frames, pending.sequence_number_length, buffer,
+        kMaxPacketSize);
     if (serialized_packet.packet == nullptr) {
       // We failed to serialize the packet, so close the connection.
       // CloseConnection does not send close packet, so no infinite loop here.
@@ -1407,7 +1404,6 @@ void QuicConnection::NeuterUnencryptedPackets() {
 }
 
 bool QuicConnection::ShouldGeneratePacket(
-    TransmissionType transmission_type,
     HasRetransmittableData retransmittable,
     IsHandshake handshake) {
   // We should serialize handshake packets immediately to ensure that they
@@ -1480,8 +1476,8 @@ bool QuicConnection::WritePacketInner(QueuedPacket* packet) {
   // Others are deleted at the end of this call.
   if (is_connection_close) {
     DCHECK(connection_close_packet_.get() == nullptr);
-    connection_close_packet_.reset(encrypted);
-    packet->serialized_packet.packet = nullptr;
+    // Clone the packet so it's owned in the future.
+    connection_close_packet_.reset(encrypted->Clone());
     // This assures we won't try to write *forced* packets when blocked.
     // Return true to stop processing.
     if (writer_->IsWriteBlocked()) {
@@ -1678,6 +1674,13 @@ void QuicConnection::SendOrQueuePacket(QueuedPacket packet) {
       packet.serialized_packet.sequence_number,
       packet.serialized_packet.entropy_hash);
   if (!WritePacket(&packet)) {
+    // Take ownership of the underlying encrypted packet.
+    if (!packet.serialized_packet.packet->owns_buffer()) {
+      scoped_ptr<QuicEncryptedPacket> encrypted_deleter(
+          packet.serialized_packet.packet);
+      packet.serialized_packet.packet =
+          packet.serialized_packet.packet->Clone();
+    }
     queued_packets_.push_back(packet);
   }
 
@@ -1986,8 +1989,7 @@ bool QuicConnection::CanWriteStreamData() {
   // or the congestion manager to prohibit sending.  If we've sent everything
   // we had queued and we're still not blocked, let the visitor know it can
   // write more.
-  return ShouldGeneratePacket(NOT_RETRANSMISSION, HAS_RETRANSMITTABLE_DATA,
-                              pending_handshake);
+  return ShouldGeneratePacket(HAS_RETRANSMITTABLE_DATA, pending_handshake);
 }
 
 void QuicConnection::SetNetworkTimeouts(QuicTime::Delta overall_timeout,

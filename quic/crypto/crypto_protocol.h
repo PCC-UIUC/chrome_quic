@@ -26,6 +26,7 @@ namespace net {
 
 typedef std::string ServerConfigID;
 
+// clang-format off
 const QuicTag kPCC = TAG('k', 'P', 'C', 'C');
 const QuicTag kCHLO = TAG('C', 'H', 'L', 'O');   // Client hello
 const QuicTag kSHLO = TAG('S', 'H', 'L', 'O');   // Server hello
@@ -94,8 +95,6 @@ const QuicTag kNONC = TAG('N', 'O', 'N', 'C');   // The client's nonce
 const QuicTag kKEXS = TAG('K', 'E', 'X', 'S');   // Key exchange methods
 const QuicTag kAEAD = TAG('A', 'E', 'A', 'D');   // Authenticated
                                                  // encryption algorithms
-const QuicTag kCGST = TAG('C', 'G', 'S', 'T');   // Congestion control
-                                                 // feedback types
 const QuicTag kCOPT = TAG('C', 'O', 'P', 'T');   // Connection options
 const QuicTag kICSL = TAG('I', 'C', 'S', 'L');   // Idle connection state
                                                  // lifetime
@@ -123,8 +122,8 @@ const QuicTag kUAID = TAG('U', 'A', 'I', 'D');   // Client's User Agent ID.
 // Rejection tags
 const QuicTag kRREJ = TAG('R', 'R', 'E', 'J');   // Reasons for server sending
 // Stateless Reject tags
-const QuicTag kRCID = TAG('R', 'C', 'I', 'D');  // Server-designated
-                                                // connection ID
+const QuicTag kRCID = TAG('R', 'C', 'I', 'D');   // Server-designated
+                                                 // connection ID
 // Server hello tags
 const QuicTag kCADR = TAG('C', 'A', 'D', 'R');   // Client IP address and port
 
@@ -138,6 +137,7 @@ const QuicTag kRSEQ = TAG('R', 'S', 'E', 'Q');   // Rejected sequence number
 
 // Universal tags
 const QuicTag kPAD  = TAG('P', 'A', 'D', '\0');  // Padding
+// clang-format on
 
 // These tags have a special form so that they appear either at the beginning
 // or the end of a handshake message. Since handshake messages are sorted by

@@ -7,6 +7,7 @@
 #include "base/callback_helpers.h"
 #include "base/memory/ref_counted.h"
 #include "base/run_loop.h"
+#include "base/thread_task_runner_handle.h"
 #include "base/time/time.h"
 #include "net/base/address_list.h"
 #include "net/base/io_buffer.h"
@@ -19,10 +20,10 @@
 #include "net/cert/test_root_certs.h"
 #include "net/dns/host_resolver.h"
 #include "net/http/transport_security_state.h"
-#include "net/log/captured_net_log_entry.h"
 #include "net/log/net_log.h"
-#include "net/log/net_log_unittest.h"
 #include "net/log/test_net_log.h"
+#include "net/log/test_net_log_entry.h"
+#include "net/log/test_net_log_util.h"
 #include "net/socket/client_socket_factory.h"
 #include "net/socket/client_socket_handle.h"
 #include "net/socket/socket_test_util.h"
@@ -939,22 +940,20 @@ class SSLClientSocketFalseStartTest : public SSLClientSocketTest {
 class SSLClientSocketChannelIDTest : public SSLClientSocketTest {
  protected:
   void EnableChannelID() {
-    channel_id_service_.reset(
-        new ChannelIDService(new DefaultChannelIDStore(NULL),
-                             base::MessageLoopProxy::current()));
+    channel_id_service_.reset(new ChannelIDService(
+        new DefaultChannelIDStore(NULL), base::ThreadTaskRunnerHandle::Get()));
     context_.channel_id_service = channel_id_service_.get();
   }
 
   void EnableFailingChannelID() {
     channel_id_service_.reset(new ChannelIDService(
-        new FailingChannelIDStore(), base::MessageLoopProxy::current()));
+        new FailingChannelIDStore(), base::ThreadTaskRunnerHandle::Get()));
     context_.channel_id_service = channel_id_service_.get();
   }
 
   void EnableAsyncFailingChannelID() {
     channel_id_service_.reset(new ChannelIDService(
-        new AsyncFailingChannelIDStore(),
-        base::MessageLoopProxy::current()));
+        new AsyncFailingChannelIDStore(), base::ThreadTaskRunnerHandle::Get()));
     context_.channel_id_service = channel_id_service_.get();
   }
 
@@ -971,7 +970,7 @@ class SSLClientSocketChannelIDTest : public SSLClientSocketTest {
 // they'll give up waiting for application data and send the Finished after a
 // timeout. This means that an SSL connect end event may appear as a socket
 // write.
-static bool LogContainsSSLConnectEndEvent(const CapturedNetLogEntry::List& log,
+static bool LogContainsSSLConnectEndEvent(const TestNetLogEntry::List& log,
                                           int i) {
   return LogContainsEndEvent(log, i, NetLog::TYPE_SSL_CONNECT) ||
          LogContainsEvent(
@@ -1015,7 +1014,7 @@ TEST_F(SSLClientSocketTest, Connect) {
 
   rv = sock->Connect(callback.callback());
 
-  CapturedNetLogEntry::List entries;
+  TestNetLogEntry::List entries;
   log.GetEntries(&entries);
   EXPECT_TRUE(LogContainsBeginEvent(entries, 5, NetLog::TYPE_SSL_CONNECT));
   if (rv == ERR_IO_PENDING)
@@ -1057,7 +1056,7 @@ TEST_F(SSLClientSocketTest, ConnectExpired) {
 
   rv = sock->Connect(callback.callback());
 
-  CapturedNetLogEntry::List entries;
+  TestNetLogEntry::List entries;
   log.GetEntries(&entries);
   EXPECT_TRUE(LogContainsBeginEvent(entries, 5, NetLog::TYPE_SSL_CONNECT));
   if (rv == ERR_IO_PENDING)
@@ -1101,7 +1100,7 @@ TEST_F(SSLClientSocketTest, ConnectMismatched) {
 
   rv = sock->Connect(callback.callback());
 
-  CapturedNetLogEntry::List entries;
+  TestNetLogEntry::List entries;
   log.GetEntries(&entries);
   EXPECT_TRUE(LogContainsBeginEvent(entries, 5, NetLog::TYPE_SSL_CONNECT));
   if (rv == ERR_IO_PENDING)
@@ -1145,7 +1144,7 @@ TEST_F(SSLClientSocketTest, ConnectClientAuthCertRequested) {
 
   rv = sock->Connect(callback.callback());
 
-  CapturedNetLogEntry::List entries;
+  TestNetLogEntry::List entries;
   log.GetEntries(&entries);
   EXPECT_TRUE(LogContainsBeginEvent(entries, 5, NetLog::TYPE_SSL_CONNECT));
   if (rv == ERR_IO_PENDING)
@@ -1210,7 +1209,7 @@ TEST_F(SSLClientSocketTest, ConnectClientAuthSendNullCert) {
   // TODO(davidben): Add a test which requires them and verify the error.
   rv = sock->Connect(callback.callback());
 
-  CapturedNetLogEntry::List entries;
+  TestNetLogEntry::List entries;
   log.GetEntries(&entries);
   EXPECT_TRUE(LogContainsBeginEvent(entries, 5, NetLog::TYPE_SSL_CONNECT));
   if (rv == ERR_IO_PENDING)
@@ -2137,7 +2136,7 @@ TEST_F(SSLClientSocketTest, Read_FullLogging) {
     rv = callback.WaitForResult();
   EXPECT_EQ(static_cast<int>(arraysize(request_text) - 1), rv);
 
-  CapturedNetLogEntry::List entries;
+  TestNetLogEntry::List entries;
   log.GetEntries(&entries);
   size_t last_index = ExpectLogContainsSomewhereAfter(
       entries, 5, NetLog::TYPE_SSL_SOCKET_BYTES_SENT, NetLog::PHASE_NONE);
@@ -2249,7 +2248,7 @@ TEST_F(SSLClientSocketTest, CipherSuiteDisables) {
   EXPECT_FALSE(sock->IsConnected());
 
   rv = sock->Connect(callback.callback());
-  CapturedNetLogEntry::List entries;
+  TestNetLogEntry::List entries;
   log.GetEntries(&entries);
   EXPECT_TRUE(LogContainsBeginEvent(entries, 5, NetLog::TYPE_SSL_CONNECT));
 
@@ -2543,7 +2542,7 @@ TEST_F(SSLClientSocketTest, VerifyReturnChainProperlyOrdered) {
   EXPECT_FALSE(sock->IsConnected());
   rv = sock->Connect(callback.callback());
 
-  CapturedNetLogEntry::List entries;
+  TestNetLogEntry::List entries;
   log.GetEntries(&entries);
   EXPECT_TRUE(LogContainsBeginEvent(entries, 5, NetLog::TYPE_SSL_CONNECT));
   if (rv == ERR_IO_PENDING)
@@ -3392,7 +3391,9 @@ TEST_F(SSLClientSocketChannelIDTest, SendChannelID) {
 
   EXPECT_EQ(OK, rv);
   EXPECT_TRUE(sock_->IsConnected());
-  EXPECT_TRUE(sock_->WasChannelIDSent());
+  SSLInfo ssl_info;
+  ASSERT_TRUE(sock_->GetSSLInfo(&ssl_info));
+  EXPECT_TRUE(ssl_info.channel_id_sent);
 
   sock_->Disconnect();
   EXPECT_FALSE(sock_->IsConnected());

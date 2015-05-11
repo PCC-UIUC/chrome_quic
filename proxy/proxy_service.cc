@@ -13,7 +13,6 @@
 #include "base/memory/weak_ptr.h"
 #include "base/message_loop/message_loop.h"
 #include "base/message_loop/message_loop_proxy.h"
-#include "base/profiler/scoped_tracker.h"
 #include "base/strings/string_util.h"
 #include "base/thread_task_runner_handle.h"
 #include "base/values.h"
@@ -237,22 +236,17 @@ class ProxyResolverFromPacString : public ProxyResolver {
 };
 
 // Creates ProxyResolvers using a platform-specific implementation.
-class ProxyResolverFactoryForSystem : public LegacyProxyResolverFactory {
+class ProxyResolverFactoryForSystem : public MultiThreadedProxyResolverFactory {
  public:
   explicit ProxyResolverFactoryForSystem(size_t max_num_threads)
-      : LegacyProxyResolverFactory(false /*expects_pac_bytes*/),
-        max_num_threads_(max_num_threads) {}
+      : MultiThreadedProxyResolverFactory(max_num_threads,
+                                          false /*expects_pac_bytes*/) {}
 
-  scoped_ptr<ProxyResolver> CreateProxyResolver() override {
-    DCHECK(IsSupported());
-    if (max_num_threads_ > 1) {
-      return make_scoped_ptr(new MultiThreadedProxyResolver(
-          new ProxyResolverFactoryForSystem(1), max_num_threads_));
-    }
+  scoped_ptr<ProxyResolverFactory> CreateProxyResolverFactory() override {
 #if defined(OS_WIN)
-    return make_scoped_ptr(new ProxyResolverWinHttp());
+    return make_scoped_ptr(new ProxyResolverFactoryWinHttp());
 #elif defined(OS_MACOSX)
-    return make_scoped_ptr(new ProxyResolverMac());
+    return make_scoped_ptr(new ProxyResolverFactoryMac());
 #else
     NOTREACHED();
     return NULL;
@@ -268,8 +262,6 @@ class ProxyResolverFactoryForSystem : public LegacyProxyResolverFactory {
   }
 
  private:
-  const size_t max_num_threads_;
-
   DISALLOW_COPY_AND_ASSIGN(ProxyResolverFactoryForSystem);
 };
 
@@ -507,10 +499,6 @@ class ProxyService::InitProxyResolver {
   }
 
   int DoDecideProxyScript() {
-    // TODO(eroman): Remove ScopedTracker below once crbug.com/455942 is fixed.
-    tracked_objects::ScopedTracker tracking_profile(
-        FROM_HERE_WITH_EXPLICIT_FUNCTION(
-            "455942 ProxyService::InitProxyResolver::DoDecideProxyScript"));
     next_state_ = STATE_DECIDE_PROXY_SCRIPT_COMPLETE;
 
     return decider_->Start(
@@ -801,7 +789,8 @@ class ProxyService::PacRequest
         resolve_job_(NULL),
         config_id_(ProxyConfig::kInvalidConfigID),
         config_source_(PROXY_CONFIG_SOURCE_UNKNOWN),
-        net_log_(net_log) {
+        net_log_(net_log),
+        creation_time_(TimeTicks::Now()) {
     DCHECK(!user_callback.is_null());
   }
 
@@ -814,7 +803,6 @@ class ProxyService::PacRequest
 
     config_id_ = service_->config_.id();
     config_source_ = service_->config_.source();
-    proxy_resolve_start_time_ = TimeTicks::Now();
 
     return resolver()->GetProxyForURL(
         url_, results_,
@@ -882,7 +870,7 @@ class ProxyService::PacRequest
     results_->config_id_ = config_id_;
     results_->config_source_ = config_source_;
     results_->did_use_pac_script_ = true;
-    results_->proxy_resolve_start_time_ = proxy_resolve_start_time_;
+    results_->proxy_resolve_start_time_ = creation_time_;
     results_->proxy_resolve_end_time_ = TimeTicks::Now();
 
     // Reset the state associated with in-progress-resolve.
@@ -933,9 +921,9 @@ class ProxyService::PacRequest
   ProxyConfig::ID config_id_;  // The config id when the resolve was started.
   ProxyConfigSource config_source_;  // The source of proxy settings.
   BoundNetLog net_log_;
-  // Time when the PAC is started.  Cached here since resetting ProxyInfo also
-  // clears the proxy times.
-  TimeTicks proxy_resolve_start_time_;
+  // Time when the request was created.  Stored here rather than in |results_|
+  // because the time in |results_| will be cleared.
+  TimeTicks creation_time_;
 };
 
 // ProxyService ---------------------------------------------------------------
@@ -1392,7 +1380,7 @@ int ProxyService::DidFinishResolvingProxy(const GURL& url,
       network_delegate->NotifyResolveProxy(url, load_flags, *this, result);
 
     // When logging all events is enabled, dump the proxy list.
-    if (net_log.GetCaptureMode().enabled()) {
+    if (net_log.IsCapturing()) {
       net_log.AddEvent(
           NetLog::TYPE_PROXY_SERVICE_RESOLVED_PROXY_LIST,
           base::Bind(&NetLogFinishedResolvingProxyCallback, result));
