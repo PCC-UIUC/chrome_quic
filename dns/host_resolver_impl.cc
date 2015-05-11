@@ -185,6 +185,10 @@ bool ResemblesMulticastDNSName(const std::string& hostname) {
 // Attempts to connect a UDP socket to |dest|:53.
 bool IsGloballyReachable(const IPAddressNumber& dest,
                          const BoundNetLog& net_log) {
+  // TODO(eroman): Remove ScopedTracker below once crbug.com/455942 is fixed.
+  tracked_objects::ScopedTracker tracking_profile_1(
+      FROM_HERE_WITH_EXPLICIT_FUNCTION("455942 IsGloballyReachable"));
+
   scoped_ptr<DatagramClientSocket> socket(
       ClientSocketFactory::GetDefaultFactory()->CreateDatagramClientSocket(
           DatagramSocket::DEFAULT_BIND,
@@ -1872,10 +1876,6 @@ int HostResolverImpl::Resolve(const RequestInfo& info,
                               const CompletionCallback& callback,
                               RequestHandle* out_req,
                               const BoundNetLog& source_net_log) {
-  // TODO(eroman): Remove ScopedTracker below once crbug.com/455942 is fixed.
-  tracked_objects::ScopedTracker tracking_profile(
-      FROM_HERE_WITH_EXPLICIT_FUNCTION("455942 HostResolverImpl::Resolve"));
-
   DCHECK(addresses);
   DCHECK(CalledOnValidThread());
   DCHECK_EQ(false, callback.is_null());

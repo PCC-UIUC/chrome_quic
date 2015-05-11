@@ -10,6 +10,7 @@
 #include <errno.h>
 #include <openssl/bio.h>
 #include <openssl/err.h>
+#include <openssl/mem.h>
 #include <openssl/ssl.h>
 #include <string.h>
 
@@ -143,19 +144,6 @@ ScopedX509Stack OSCertHandlesToOpenSSL(
 int LogErrorCallback(const char* str, size_t len, void* context) {
   LOG(ERROR) << base::StringPiece(str, len);
   return 1;
-}
-
-bool IsOCSPStaplingSupported() {
-#if defined(OS_WIN)
-  // CERT_OCSP_RESPONSE_PROP_ID is only implemented on Vista+, but it can be
-  // set on Windows XP without error. There is some overhead from the server
-  // sending the OCSP response if it supports the extension, for the subset of
-  // XP clients who will request it but be unable to use it, but this is an
-  // acceptable trade-off for simplicity of implementation.
-  return true;
-#else
-  return false;
-#endif
 }
 
 }  // namespace
@@ -382,7 +370,7 @@ SSLClientSocketOpenSSL::SSLClientSocketOpenSSL(
       ssl_session_cache_shard_(context.ssl_session_cache_shard),
       next_handshake_state_(STATE_NONE),
       npn_status_(kNextProtoUnsupported),
-      channel_id_xtn_negotiated_(false),
+      channel_id_sent_(false),
       handshake_completed_(false),
       certificate_verified_(false),
       transport_security_state_(context.transport_security_state),
@@ -404,7 +392,7 @@ void SSLClientSocketOpenSSL::GetSSLCertRequestInfo(
 }
 
 SSLClientSocket::NextProtoStatus SSLClientSocketOpenSSL::GetNextProto(
-    std::string* proto) {
+    std::string* proto) const {
   *proto = npn_proto_;
   return npn_status_;
 }
@@ -418,6 +406,9 @@ int SSLClientSocketOpenSSL::ExportKeyingMaterial(
     const base::StringPiece& label,
     bool has_context, const base::StringPiece& context,
     unsigned char* out, unsigned int outlen) {
+  if (!IsConnected())
+    return ERR_SOCKET_NOT_CONNECTED;
+
   crypto::OpenSSLErrStackTracer err_tracer(FROM_HERE);
 
   int rv = SSL_export_keying_material(
@@ -518,7 +509,7 @@ void SSLClientSocketOpenSSL::Disconnect() {
   npn_status_ = kNextProtoUnsupported;
   npn_proto_.clear();
 
-  channel_id_xtn_negotiated_ = false;
+  channel_id_sent_ = false;
   channel_id_request_handle_.Cancel();
 }
 
@@ -607,7 +598,7 @@ bool SSLClientSocketOpenSSL::GetSSLInfo(SSLInfo* ssl_info) {
     server_cert_verify_result_.public_key_hashes;
   ssl_info->client_cert_sent =
       ssl_config_.send_client_cert && ssl_config_.client_cert.get();
-  ssl_info->channel_id_sent = WasChannelIDSent();
+  ssl_info->channel_id_sent = channel_id_sent_;
   ssl_info->pinning_failure_log = pinning_failure_log_;
 
   AddSCTInfoToSSLInfo(ssl_info);
@@ -847,7 +838,7 @@ int SSLClientSocketOpenSSL::Init() {
     SSL_enable_ocsp_stapling(ssl_);
   }
 
-  if (IsOCSPStaplingSupported())
+  if (cert_verifier_->SupportsOCSPStapling())
     SSL_enable_ocsp_stapling(ssl_);
 
   // Enable fastradio padding.
@@ -940,14 +931,14 @@ int SSLClientSocketOpenSSL::DoHandshake() {
       }
     }
 
-    RecordChannelIDSupport(channel_id_service_,
-                           channel_id_xtn_negotiated_,
+    RecordNegotiationExtension();
+    RecordChannelIDSupport(channel_id_service_, channel_id_sent_,
                            ssl_config_.channel_id_enabled,
                            crypto::ECPrivateKey::IsSupported());
 
     // Only record OCSP histograms if OCSP was requested.
     if (ssl_config_.signed_cert_timestamps_enabled ||
-        IsOCSPStaplingSupported()) {
+        cert_verifier_->SupportsOCSPStapling()) {
       const uint8_t* ocsp_response;
       size_t ocsp_response_len;
       SSL_get0_ocsp_response(ssl_, &ocsp_response, &ocsp_response_len);
@@ -973,7 +964,6 @@ int SSLClientSocketOpenSSL::DoHandshake() {
     if (ssl_error == SSL_ERROR_WANT_CHANNEL_ID_LOOKUP) {
       // The server supports channel ID. Stop to look one up before returning to
       // the handshake.
-      channel_id_xtn_negotiated_ = true;
       GotoState(STATE_CHANNEL_ID_LOOKUP);
       return OK;
     }
@@ -1043,7 +1033,7 @@ int SSLClientSocketOpenSSL::DoChannelIDLookupComplete(int result) {
   }
 
   // Return to the handshake.
-  set_channel_id_sent(true);
+  channel_id_sent_ = true;
   net_log_.AddEvent(NetLog::TYPE_SSL_CHANNEL_ID_PROVIDED);
   GotoState(STATE_HANDSHAKE);
   return OK;
@@ -1080,6 +1070,15 @@ int SSLClientSocketOpenSSL::DoVerifyCert(int result) {
     return ERR_CERT_INVALID;
   }
 
+  std::string ocsp_response;
+  if (cert_verifier_->SupportsOCSPStapling()) {
+    const uint8_t* ocsp_response_raw;
+    size_t ocsp_response_len;
+    SSL_get0_ocsp_response(ssl_, &ocsp_response_raw, &ocsp_response_len);
+    ocsp_response.assign(reinterpret_cast<const char*>(ocsp_response_raw),
+                         ocsp_response_len);
+  }
+
   start_cert_verification_time_ = base::TimeTicks::Now();
 
   int flags = 0;
@@ -1093,13 +1092,10 @@ int SSLClientSocketOpenSSL::DoVerifyCert(int result) {
     flags |= CertVerifier::VERIFY_REV_CHECKING_REQUIRED_LOCAL_ANCHORS;
   verifier_.reset(new SingleRequestCertVerifier(cert_verifier_));
   return verifier_->Verify(
-      server_cert_.get(),
-      host_and_port_.host(),
-      flags,
+      server_cert_.get(), host_and_port_.host(), ocsp_response, flags,
       // TODO(davidben): Route the CRLSet through SSLConfig so
       // SSLClientSocket doesn't depend on SSLConfigService.
-      SSLConfigService::GetCRLSet().get(),
-      &server_cert_verify_result_,
+      SSLConfigService::GetCRLSet().get(), &server_cert_verify_result_,
       base::Bind(&SSLClientSocketOpenSSL::OnHandshakeIOComplete,
                  base::Unretained(this)),
       net_log_);
@@ -1175,33 +1171,6 @@ void SSLClientSocketOpenSSL::UpdateServerCert() {
         NetLog::TYPE_SSL_CERTIFICATES_RECEIVED,
         base::Bind(&NetLogX509CertificateCallback,
                    base::Unretained(server_cert_.get())));
-
-    // TODO(rsleevi): Plumb an OCSP response into the Mac system library and
-    // update IsOCSPStaplingSupported for Mac. https://crbug.com/430714
-    if (IsOCSPStaplingSupported()) {
-#if defined(OS_WIN)
-      const uint8_t* ocsp_response_raw;
-      size_t ocsp_response_len;
-      SSL_get0_ocsp_response(ssl_, &ocsp_response_raw, &ocsp_response_len);
-
-      CRYPT_DATA_BLOB ocsp_response_blob;
-      ocsp_response_blob.cbData = ocsp_response_len;
-      ocsp_response_blob.pbData = const_cast<BYTE*>(ocsp_response_raw);
-      BOOL ok = CertSetCertificateContextProperty(
-          server_cert_->os_cert_handle(),
-          CERT_OCSP_RESPONSE_PROP_ID,
-          CERT_SET_PROPERTY_IGNORE_PERSIST_ERROR_FLAG,
-          &ocsp_response_blob);
-      if (!ok) {
-        VLOG(1) << "Failed to set OCSP response property: "
-                << GetLastError();
-      }
-#else
-      // TODO(davidben): Support OCSP stapling when NSS is the system
-      // certificate verifier. https://crbug.com/479034.
-      NOTREACHED();
-#endif
-    }
   }
 }
 

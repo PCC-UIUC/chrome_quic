@@ -7,6 +7,7 @@
 
 #include <set>
 
+#include "base/callback_helpers.h"
 #include "base/memory/ref_counted.h"
 #include "base/memory/scoped_ptr.h"
 #include "base/threading/thread_checker.h"
@@ -15,6 +16,7 @@
 #include "net/interfaces/host_resolver_service.mojom.h"
 #include "net/interfaces/proxy_resolver_service.mojom.h"
 #include "net/proxy/proxy_resolver.h"
+#include "net/proxy/proxy_resolver_factory.h"
 #include "net/proxy/proxy_resolver_script_data.h"
 #include "third_party/mojo/src/mojo/public/cpp/bindings/binding.h"
 
@@ -31,18 +33,22 @@ class MojoProxyResolverFactory;
 // PAC scripts. This implementation only knows about Mojo services, and
 // therefore that service may live in or out of process.
 //
-// This implementation handles disconnections from the Mojo service (i.e. if the
-// service is out-of-process and that process crashes) and transparently
-// re-connects to a new service.
+// This implementation reports disconnections from the Mojo service (i.e. if the
+// service is out-of-process and that process crashes) using the error code
+// ERR_PAC_SCRIPT_TERMINATED.
 class ProxyResolverMojo : public ProxyResolver, public mojo::ErrorHandler {
  public:
-  // Constructs a ProxyResolverMojo and connects to a new Mojo proxy resolver
-  // service using |mojo_proxy_resolver_factory|. The new Mojo proxy resolver
-  // uses |host_resolver| as the DNS resolver.  |mojo_proxy_resolver_factory|
-  // and |host_resolver| are not owned and must outlive this.
+  // Constructs a ProxyResolverMojo that connects to a mojo proxy resolver
+  // implementation using |resolver_ptr|. The implementation uses
+  // |host_resolver| as the DNS resolver, using |host_resolver_binding| to
+  // communicate with it. When deleted, the closure contained within
+  // |on_delete_callback_runner| will be run.
   // TODO(amistry): Add ProxyResolverErrorObserver and NetLog.
-  ProxyResolverMojo(MojoProxyResolverFactory* mojo_proxy_resolver_factory,
-                    HostResolver* host_resolver);
+  ProxyResolverMojo(
+      interfaces::ProxyResolverPtr resolver_ptr,
+      scoped_ptr<interfaces::HostResolver> host_resolver,
+      scoped_ptr<mojo::Binding<interfaces::HostResolver>> host_resolver_binding,
+      scoped_ptr<base::ScopedClosureRunner> on_delete_callback_runner);
   ~ProxyResolverMojo() override;
 
   // ProxyResolver implementation:
@@ -63,14 +69,6 @@ class ProxyResolverMojo : public ProxyResolver, public mojo::ErrorHandler {
   // Overridden from mojo::ErrorHandler:
   void OnConnectionError() override;
 
-  // Callback for ProxyResolverService::SetPacScript.
-  void OnSetPacScriptDone(
-      const scoped_refptr<ProxyResolverScriptData>& pac_script,
-      const net::CompletionCallback& callback,
-      int32_t result);
-
-  void SetUpServices();
-
   void RemoveJob(Job* job);
 
   // Connection to the Mojo proxy resolver.
@@ -81,20 +79,37 @@ class ProxyResolverMojo : public ProxyResolver, public mojo::ErrorHandler {
   scoped_ptr<mojo::Binding<interfaces::HostResolver>>
       mojo_host_resolver_binding_;
 
-  // Factory for connecting to new Mojo proxy resolvers.
-  // Not owned.
-  MojoProxyResolverFactory* mojo_proxy_resolver_factory_;
-
-  // DNS resolver, saved for creating a new Mojo proxy resolver when the
-  // existing one disconnects (i.e. when utility process crashes).
-  HostResolver* host_resolver_;
-
   std::set<Job*> pending_jobs_;
-  net::CancelableCompletionCallback set_pac_script_callback_;
 
   base::ThreadChecker thread_checker_;
 
+  scoped_ptr<base::ScopedClosureRunner> on_delete_callback_runner_;
+
   DISALLOW_COPY_AND_ASSIGN(ProxyResolverMojo);
+};
+
+// Implementation of ProxyResolverFactory that connects to a Mojo service to
+// create implementations of a Mojo proxy resolver to back a ProxyResolverMojo.
+class ProxyResolverFactoryMojo : public ProxyResolverFactory {
+ public:
+  ProxyResolverFactoryMojo(MojoProxyResolverFactory* mojo_proxy_factory,
+                           HostResolver* host_resolver);
+  ~ProxyResolverFactoryMojo() override;
+
+  // ProxyResolverFactory override.
+  int CreateProxyResolver(
+      const scoped_refptr<ProxyResolverScriptData>& pac_script,
+      scoped_ptr<ProxyResolver>* resolver,
+      const CompletionCallback& callback,
+      scoped_ptr<Request>* request) override;
+
+ private:
+  class Job;
+
+  MojoProxyResolverFactory* const mojo_proxy_factory_;
+  HostResolver* const host_resolver_;
+
+  DISALLOW_COPY_AND_ASSIGN(ProxyResolverFactoryMojo);
 };
 
 }  // namespace net

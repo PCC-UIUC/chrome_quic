@@ -284,8 +284,6 @@ void DynamicSocketDataProvider::SimulateRead(const char* data,
 SSLSocketDataProvider::SSLSocketDataProvider(IoMode mode, int result)
     : connect(mode, result),
       next_proto_status(SSLClientSocket::kNextProtoUnsupported),
-      was_npn_negotiated(false),
-      protocol_negotiated(kProtoUnknown),
       client_cert_sent(false),
       cert_request_info(NULL),
       channel_id_sent(false),
@@ -300,9 +298,7 @@ SSLSocketDataProvider::~SSLSocketDataProvider() {
 }
 
 void SSLSocketDataProvider::SetNextProto(NextProto proto) {
-  was_npn_negotiated = true;
   next_proto_status = SSLClientSocket::kNextProtoNegotiated;
-  protocol_negotiated = proto;
   next_proto = SSLClientSocket::NextProtoToString(proto);
 }
 
@@ -519,6 +515,15 @@ MockRead SequencedSocketData::OnRead() {
   NET_TRACE(1, " *** ") << "next_read: " << next_read.sequence_number;
   CHECK_GE(next_read.sequence_number, sequence_number_);
 
+  // Special case handling for hanging reads.
+  if (next_read.mode == ASYNC && next_read.result == ERR_IO_PENDING) {
+    NET_TRACE(1, " *** ") << "Hanging read";
+    helper_.AdvanceRead();
+    ++sequence_number_;
+    CHECK(helper_.at_read_eof());
+    return MockRead(SYNCHRONOUS, ERR_IO_PENDING);
+  }
+
   if (next_read.sequence_number <= sequence_number_) {
     if (next_read.mode == SYNCHRONOUS) {
       NET_TRACE(1, " *** ") << "Returning synchronously";
@@ -595,11 +600,11 @@ void SequencedSocketData::Reset() {
   weak_factory_.InvalidateWeakPtrs();
 }
 
-bool SequencedSocketData::at_read_eof() {
+bool SequencedSocketData::at_read_eof() const {
   return helper_.at_read_eof();
 }
 
-bool SequencedSocketData::at_write_eof() {
+bool SequencedSocketData::at_write_eof() const {
   return helper_.at_read_eof();
 }
 
@@ -1024,8 +1029,8 @@ ChannelIDService* MockClientSocket::GetChannelIDService() const {
   return NULL;
 }
 
-SSLClientSocket::NextProtoStatus
-MockClientSocket::GetNextProto(std::string* proto) {
+SSLClientSocket::NextProtoStatus MockClientSocket::GetNextProto(
+    std::string* proto) const {
   proto->clear();
   return SSLClientSocket::kNextProtoUnsupported;
 }
@@ -1581,11 +1586,7 @@ MockSSLClientSocket::MockSSLClientSocket(
           // tests.
           transport_socket->socket()->NetLog()),
       transport_(transport_socket.Pass()),
-      data_(data),
-      is_npn_state_set_(false),
-      new_npn_value_(false),
-      is_protocol_negotiated_set_(false),
-      protocol_negotiated_(kProtoUnknown) {
+      data_(data) {
   DCHECK(data_);
   peer_addr_ = data->connect.peer_addr;
 }
@@ -1663,40 +1664,9 @@ void MockSSLClientSocket::GetSSLCertRequestInfo(
 }
 
 SSLClientSocket::NextProtoStatus MockSSLClientSocket::GetNextProto(
-    std::string* proto) {
+    std::string* proto) const {
   *proto = data_->next_proto;
   return data_->next_proto_status;
-}
-
-bool MockSSLClientSocket::set_was_npn_negotiated(bool negotiated) {
-  is_npn_state_set_ = true;
-  return new_npn_value_ = negotiated;
-}
-
-bool MockSSLClientSocket::WasNpnNegotiated() const {
-  if (is_npn_state_set_)
-    return new_npn_value_;
-  return data_->was_npn_negotiated;
-}
-
-NextProto MockSSLClientSocket::GetNegotiatedProtocol() const {
-  if (is_protocol_negotiated_set_)
-    return protocol_negotiated_;
-  return data_->protocol_negotiated;
-}
-
-void MockSSLClientSocket::set_protocol_negotiated(
-    NextProto protocol_negotiated) {
-  is_protocol_negotiated_set_ = true;
-  protocol_negotiated_ = protocol_negotiated;
-}
-
-bool MockSSLClientSocket::WasChannelIDSent() const {
-  return data_->channel_id_sent;
-}
-
-void MockSSLClientSocket::set_channel_id_sent(bool channel_id_sent) {
-  data_->channel_id_sent = channel_id_sent;
 }
 
 ChannelIDService* MockSSLClientSocket::GetChannelIDService() const {
@@ -1981,9 +1951,9 @@ MockTransportClientSocketPool::MockConnectJob::~MockConnectJob() {}
 int MockTransportClientSocketPool::MockConnectJob::Connect() {
   int rv = socket_->Connect(base::Bind(&MockConnectJob::OnConnect,
                                        base::Unretained(this)));
-  if (rv == OK) {
+  if (rv != ERR_IO_PENDING) {
     user_callback_.Reset();
-    OnConnect(OK);
+    OnConnect(rv);
   }
   return rv;
 }
@@ -2015,6 +1985,11 @@ void MockTransportClientSocketPool::MockConnectJob::OnConnect(int rv) {
     handle_->set_connect_timing(connect_timing);
   } else {
     socket_.reset();
+
+    // Needed to test copying of ConnectionAttempts in SSL ConnectJob.
+    ConnectionAttempts attempts;
+    attempts.push_back(ConnectionAttempt(IPEndPoint(), rv));
+    handle_->set_connection_attempts(attempts);
   }
 
   handle_ = NULL;

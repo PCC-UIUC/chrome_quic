@@ -54,6 +54,11 @@ ClientSocketPoolManager* CreateSocketPoolManager(
 // The maximum receive window sizes for HTTP/2 sessions and streams.
 const int32 kSpdySessionMaxRecvWindowSize = 10 * 1024 * 1024;  // 10 MB
 const int32 kSpdyStreamMaxRecvWindowSize = 10 * 1024 * 1024;   // 10 MB
+// QUIC's socket receive buffer size.
+// We should adaptively set this buffer size, but for now, we'll use a size
+// that seems large enough to receive data at line rate for most connections,
+// and does not consume "too much" memory.
+const int32 kQuicSocketReceiveBufferSize = 1024 * 1024;  // 1MB
 
 HttpNetworkSession::Params::Params()
     : client_socket_factory(NULL),
@@ -80,10 +85,9 @@ HttpNetworkSession::Params::Params()
       spdy_session_max_recv_window_size(kSpdySessionMaxRecvWindowSize),
       spdy_stream_max_recv_window_size(kSpdyStreamMaxRecvWindowSize),
       spdy_initial_max_concurrent_streams(0),
-      spdy_max_concurrent_streams_limit(0),
       time_func(&base::TimeTicks::Now),
       use_alternate_protocols(false),
-      alternate_protocol_probability_threshold(1),
+      alternative_service_probability_threshold(1),
       enable_quic(false),
       enable_quic_for_proxies(false),
       enable_quic_port_selection(true),
@@ -95,7 +99,7 @@ HttpNetworkSession::Params::Params()
       quic_disable_disk_cache(false),
       quic_max_number_of_lossy_connections(0),
       quic_packet_loss_threshold(1.0f),
-      quic_socket_receive_buffer_size(kDefaultSocketReceiveBuffer),
+      quic_socket_receive_buffer_size(kQuicSocketReceiveBufferSize),
       quic_clock(NULL),
       quic_random(NULL),
       quic_max_packet_length(kDefaultMaxPacketSize),
@@ -156,7 +160,6 @@ HttpNetworkSession::HttpNetworkSession(const Params& params)
                          params.spdy_session_max_recv_window_size,
                          params.spdy_stream_max_recv_window_size,
                          params.spdy_initial_max_concurrent_streams,
-                         params.spdy_max_concurrent_streams_limit,
                          params.time_func,
                          params.trusted_spdy_proxy),
       http_stream_factory_(new HttpStreamFactoryImpl(this, false)),
@@ -196,8 +199,8 @@ HttpNetworkSession::HttpNetworkSession(const Params& params)
     }
   }
 
-  http_server_properties_->SetAlternateProtocolProbabilityThreshold(
-      params.alternate_protocol_probability_threshold);
+  http_server_properties_->SetAlternativeServiceProbabilityThreshold(
+      params.alternative_service_probability_threshold);
 }
 
 HttpNetworkSession::~HttpNetworkSession() {
@@ -271,8 +274,8 @@ base::Value* HttpNetworkSession::QuicInfoToValue() const {
   dict->Set("connection_options", connection_options);
   dict->SetString("origin_to_force_quic_on",
                   params_.origin_to_force_quic_on.ToString());
-  dict->SetDouble("alternate_protocol_probability_threshold",
-                  params_.alternate_protocol_probability_threshold);
+  dict->SetDouble("alternative_service_probability_threshold",
+                  params_.alternative_service_probability_threshold);
   return dict;
 }
 

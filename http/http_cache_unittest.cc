@@ -34,9 +34,9 @@
 #include "net/http/http_transaction_test_util.h"
 #include "net/http/http_util.h"
 #include "net/http/mock_http_cache.h"
-#include "net/log/captured_net_log_entry.h"
-#include "net/log/net_log_unittest.h"
 #include "net/log/test_net_log.h"
+#include "net/log/test_net_log_entry.h"
+#include "net/log/test_net_log_util.h"
 #include "net/socket/client_socket_handle.h"
 #include "net/ssl/ssl_cert_request_info.h"
 #include "net/websockets/websocket_handshake_stream_base.h"
@@ -534,7 +534,7 @@ class FakeWebSocketHandshakeStreamCreateHelper
 // Returns true if |entry| is not one of the log types paid attention to in this
 // test. Note that TYPE_HTTP_CACHE_WRITE_INFO and TYPE_HTTP_CACHE_*_DATA are
 // ignored.
-bool ShouldIgnoreLogEntry(const CapturedNetLogEntry& entry) {
+bool ShouldIgnoreLogEntry(const TestNetLogEntry& entry) {
   switch (entry.type) {
     case NetLog::TYPE_HTTP_CACHE_GET_BACKEND:
     case NetLog::TYPE_HTTP_CACHE_OPEN_ENTRY:
@@ -550,7 +550,7 @@ bool ShouldIgnoreLogEntry(const CapturedNetLogEntry& entry) {
 
 // Modifies |entries| to only include log entries created by the cache layer and
 // asserted on in these tests.
-void FilterLogEntries(CapturedNetLogEntry::List* entries) {
+void FilterLogEntries(TestNetLogEntry::List* entries) {
   entries->erase(std::remove_if(entries->begin(), entries->end(),
                                 &ShouldIgnoreLogEntry),
                  entries->end());
@@ -558,7 +558,7 @@ void FilterLogEntries(CapturedNetLogEntry::List* entries) {
 
 bool LogContainsEventType(const BoundTestNetLog& log,
                           NetLog::EventType expected) {
-  CapturedNetLogEntry::List entries;
+  TestNetLogEntry::List entries;
   log.GetEntries(&entries);
   for (size_t i = 0; i < entries.size(); i++) {
     if (entries[i].type == expected)
@@ -620,7 +620,7 @@ TEST(HttpCache, SimpleGETNoDiskCache) {
 
   // Check that the NetLog was filled as expected.
   // (We attempted to both Open and Create entries, but both failed).
-  CapturedNetLogEntry::List entries;
+  TestNetLogEntry::List entries;
   log.GetEntries(&entries);
   FilterLogEntries(&entries);
 
@@ -785,7 +785,7 @@ TEST(HttpCache, SimpleGET_LoadOnlyFromCache_Hit) {
                                  log.bound(), &load_timing_info);
 
   // Check that the NetLog was filled as expected.
-  CapturedNetLogEntry::List entries;
+  TestNetLogEntry::List entries;
   log.GetEntries(&entries);
   FilterLogEntries(&entries);
 
@@ -952,106 +952,6 @@ TEST(HttpCache, SimpleGET_LoadPreferringCache_VaryMismatch) {
   RemoveMockTransaction(&transaction);
 }
 
-// Tests that LOAD_FROM_CACHE_IF_OFFLINE returns proper response on
-// network success
-TEST(HttpCache, SimpleGET_CacheOverride_Network) {
-  MockHttpCache cache;
-
-  // Prime cache.
-  MockTransaction transaction(kSimpleGET_Transaction);
-  transaction.load_flags |= LOAD_FROM_CACHE_IF_OFFLINE;
-  transaction.response_headers = "Cache-Control: no-cache\n";
-
-  AddMockTransaction(&transaction);
-  RunTransactionTest(cache.http_cache(), transaction);
-  EXPECT_EQ(1, cache.network_layer()->transaction_count());
-  EXPECT_EQ(1, cache.disk_cache()->create_count());
-  RemoveMockTransaction(&transaction);
-
-  // Re-run transaction; make sure the result came from the network,
-  // not the cache.
-  transaction.data = "Changed data.";
-  AddMockTransaction(&transaction);
-  HttpResponseInfo response_info;
-  RunTransactionTestWithResponseInfo(cache.http_cache(), transaction,
-                                     &response_info);
-
-  EXPECT_EQ(2, cache.network_layer()->transaction_count());
-  EXPECT_FALSE(response_info.server_data_unavailable);
-  EXPECT_TRUE(response_info.network_accessed);
-
-  RemoveMockTransaction(&transaction);
-}
-
-// Tests that LOAD_FROM_CACHE_IF_OFFLINE returns proper response on
-// offline failure
-TEST(HttpCache, SimpleGET_CacheOverride_Offline) {
-  MockHttpCache cache;
-
-  // Prime cache.
-  MockTransaction transaction(kSimpleGET_Transaction);
-  transaction.load_flags |= LOAD_FROM_CACHE_IF_OFFLINE;
-  transaction.response_headers = "Cache-Control: no-cache\n";
-
-  AddMockTransaction(&transaction);
-  RunTransactionTest(cache.http_cache(), transaction);
-  EXPECT_EQ(1, cache.network_layer()->transaction_count());
-  EXPECT_EQ(1, cache.disk_cache()->create_count());
-  RemoveMockTransaction(&transaction);
-
-  // Network failure with offline error; should return cache entry above +
-  // flag signalling stale data.
-  transaction.return_code = ERR_NAME_NOT_RESOLVED;
-  AddMockTransaction(&transaction);
-
-  MockHttpRequest request(transaction);
-  TestCompletionCallback callback;
-  scoped_ptr<HttpTransaction> trans;
-  ASSERT_EQ(OK, cache.CreateTransaction(&trans));
-  int rv = trans->Start(&request, callback.callback(), BoundNetLog());
-  EXPECT_EQ(OK, callback.GetResult(rv));
-
-  const HttpResponseInfo* response_info = trans->GetResponseInfo();
-  ASSERT_TRUE(response_info);
-  EXPECT_TRUE(response_info->server_data_unavailable);
-  EXPECT_TRUE(response_info->was_cached);
-  EXPECT_FALSE(response_info->network_accessed);
-  ReadAndVerifyTransaction(trans.get(), transaction);
-  EXPECT_EQ(2, cache.network_layer()->transaction_count());
-
-  RemoveMockTransaction(&transaction);
-}
-
-// Tests that LOAD_FROM_CACHE_IF_OFFLINE returns proper response on
-// non-offline failure.
-TEST(HttpCache, SimpleGET_CacheOverride_NonOffline) {
-  MockHttpCache cache;
-
-  // Prime cache.
-  MockTransaction transaction(kSimpleGET_Transaction);
-  transaction.load_flags |= LOAD_FROM_CACHE_IF_OFFLINE;
-  transaction.response_headers = "Cache-Control: no-cache\n";
-
-  AddMockTransaction(&transaction);
-  RunTransactionTest(cache.http_cache(), transaction);
-  EXPECT_EQ(1, cache.network_layer()->transaction_count());
-  EXPECT_EQ(1, cache.disk_cache()->create_count());
-  RemoveMockTransaction(&transaction);
-
-  // Network failure with non-offline error; should fail with that error.
-  transaction.return_code = ERR_PROXY_CONNECTION_FAILED;
-  AddMockTransaction(&transaction);
-
-  HttpResponseInfo response_info2;
-  RunTransactionTestWithResponseInfo(cache.http_cache(), transaction,
-                                     &response_info2);
-
-  EXPECT_EQ(2, cache.network_layer()->transaction_count());
-  EXPECT_FALSE(response_info2.server_data_unavailable);
-
-  RemoveMockTransaction(&transaction);
-}
-
 // Tests that was_cached was set properly on a failure, even if the cached
 // response wasn't returned.
 TEST(HttpCache, SimpleGET_CacheSignal_Failure) {
@@ -1143,7 +1043,7 @@ TEST(HttpCache, SimpleGET_LoadBypassCache) {
                                  &load_timing_info);
 
   // Check that the NetLog was filled as expected.
-  CapturedNetLogEntry::List entries;
+  TestNetLogEntry::List entries;
   log.GetEntries(&entries);
   FilterLogEntries(&entries);
 
