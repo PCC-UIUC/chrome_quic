@@ -154,7 +154,7 @@ void QuicSentPacketManager::SetFromConfig(const QuicConfig& config) {
         clock_, &rtt_stats_, kPcc, stats_, initial_congestion_window_));
   }
   
-  if (HasClientSentConnectionOption(config, kPCC)) {
+  if (config.HasClientSentConnectionOption(kPCC, perspective_)) {
     printf("kpcc send\n");
     send_algorithm_.reset(SendAlgorithmInterface::Create(
         clock_, &rtt_stats_, kPcc, stats_, initial_congestion_window_));

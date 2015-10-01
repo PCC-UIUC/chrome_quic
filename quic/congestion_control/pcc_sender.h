@@ -22,7 +22,7 @@ class NET_EXPORT_PRIVATE PCCSender : public SendAlgorithmInterface {
   // SendAlgorithmInterface methods.
   void SetFromConfig(const QuicConfig& config,
                      Perspective perspective) override;
-  bool ResumeConnectionState(
+  void ResumeConnectionState(
       const CachedNetworkParameters& cached_network_params,
       bool max_bandwidth_resumption) override;
   void SetNumEmulatedConnections(int num_connections) override;

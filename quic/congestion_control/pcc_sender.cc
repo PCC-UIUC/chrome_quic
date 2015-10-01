@@ -14,10 +14,9 @@ void PCCSender::SetFromConfig(const QuicConfig& config,
                                  Perspective perspective) {
 }
 
-bool PCCSender::ResumeConnectionState(
+void PCCSender::ResumeConnectionState(
     const CachedNetworkParameters& cached_network_params,
     bool max_bandwidth_resumption) {
-  return true;
 }
 
 void PCCSender::SetNumEmulatedConnections(int num_connections) {
@@ -59,13 +58,13 @@ void PCCSender::OnCongestionEvent(
   int size = acked_packets.size();
   printf("acked packets\n");
   for(int i = 0; i < size; i++){
-    printf("sequence Number:%lu \n", (QuicPacketSequenceNumber)acked_packets[i].first);
+    printf("sequence Number:%lu \n", (QuicPacketNumber)acked_packets[i].first);
   }
   
   size = lost_packets.size();
   printf("lost packets\n");
   for(int i = 0; i < size; i++){
-    printf("Sequence Number:%lu \n", (QuicPacketSequenceNumber)lost_packets[i].first);
+    printf("Sequence Number:%lu \n", (QuicPacketNumber)lost_packets[i].first);
   }
 }
 
