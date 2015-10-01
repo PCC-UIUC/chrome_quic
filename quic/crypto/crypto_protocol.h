@@ -27,6 +27,7 @@ namespace net {
 typedef std::string ServerConfigID;
 
 // clang-format off
+const QuicTag kPCC = TAG('k', 'P', 'C', 'C');
 const QuicTag kCHLO = TAG('C', 'H', 'L', 'O');   // Client hello
 const QuicTag kSHLO = TAG('S', 'H', 'L', 'O');   // Server hello
 const QuicTag kSCFG = TAG('S', 'C', 'F', 'G');   // Server config
