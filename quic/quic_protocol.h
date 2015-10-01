@@ -876,6 +876,7 @@ enum CongestionControlType {
   kReno,
   kRenoBytes,
   kBBR,
+  kPcc
 };
 
 enum LossDetectionType {

@@ -70,6 +70,9 @@ QuicSimpleClient::~QuicSimpleClient() {
 bool QuicSimpleClient::Initialize() {
   DCHECK(!initialized_);
 
+  QuicTagVector copt;
+  copt.push_back(kPCC);
+  QuicClientBase::config().SetConnectionOptionsToSend(copt);
   QuicClientBase::Initialize();
 
   if (!CreateUDPSocket()) {

@@ -213,6 +213,8 @@
       'quic/congestion_control/tcp_loss_algorithm.h',
       'quic/congestion_control/time_loss_algorithm.cc',
       'quic/congestion_control/time_loss_algorithm.h',
+      'quic/congestion_control/pcc_sender.cc',
+      'quic/congestion_control/pcc_sender.h',
       'quic/crypto/aead_base_decrypter.h',
       'quic/crypto/aead_base_decrypter_openssl.cc',
       'quic/crypto/aead_base_encrypter.h',
