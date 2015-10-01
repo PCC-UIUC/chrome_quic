@@ -6,6 +6,7 @@
 
 #include <Security/Security.h>
 
+#include "base/location.h"
 #include "base/logging.h"
 #include "base/mac/mac_logging.h"
 #include "base/message_loop/message_loop.h"
@@ -32,7 +33,7 @@ class CertDatabase::Notifier {
         called_shutdown_(false) {
     // Ensure an associated CFRunLoop.
     DCHECK(base::MessageLoopForUI::IsCurrent());
-    task_runner_ = message_loop->message_loop_proxy();
+    task_runner_ = message_loop->task_runner();
     task_runner_->PostTask(FROM_HERE,
                            base::Bind(&Notifier::Init,
                                       base::Unretained(this)));
@@ -105,6 +106,9 @@ OSStatus CertDatabase::Notifier::KeychainCallback(
     case kSecTrustSettingsChangedEvent:
       that->cert_db_->NotifyObserversOfCACertChanged(NULL);
       break;
+
+    default:
+      break;
   }
 
   return errSecSuccess;
@@ -119,7 +123,7 @@ void CertDatabase::SetMessageLoopForKeychainEvents() {
 }
 
 CertDatabase::CertDatabase()
-    : observer_list_(new ObserverListThreadSafe<Observer>) {
+    : observer_list_(new base::ObserverListThreadSafe<Observer>) {
 }
 
 CertDatabase::~CertDatabase() {

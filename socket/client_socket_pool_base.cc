@@ -8,11 +8,12 @@
 
 #include "base/compiler_specific.h"
 #include "base/format_macros.h"
+#include "base/location.h"
 #include "base/logging.h"
-#include "base/message_loop/message_loop.h"
-#include "base/profiler/scoped_tracker.h"
+#include "base/single_thread_task_runner.h"
 #include "base/stl_util.h"
 #include "base/strings/string_util.h"
+#include "base/thread_task_runner_handle.h"
 #include "base/time/time.h"
 #include "base/values.h"
 #include "net/base/net_errors.h"
@@ -26,7 +27,13 @@ namespace {
 
 // Indicate whether we should enable idle socket cleanup timer. When timer is
 // disabled, sockets are closed next time a socket request is made.
+// Keep this enabled for windows as long as we support Windows XP, see the note
+// in kCleanupInterval below.
+#if defined(OS_WIN)
 bool g_cleanup_timer_enabled = true;
+#else
+bool g_cleanup_timer_enabled = false;
+#endif
 
 // The timeout value, in seconds, used to clean up idle sockets that can't be
 // reused.
@@ -146,7 +153,13 @@ ClientSocketPoolBaseHelper::Request::Request(
     DCHECK_EQ(priority_, MAXIMUM_PRIORITY);
 }
 
-ClientSocketPoolBaseHelper::Request::~Request() {}
+ClientSocketPoolBaseHelper::Request::~Request() {
+  liveness_ = DEAD;
+}
+
+void ClientSocketPoolBaseHelper::Request::CrashIfInvalid() const {
+  CHECK_EQ(liveness_, ALIVE);
+}
 
 ClientSocketPoolBaseHelper::ClientSocketPoolBaseHelper(
     HigherLayeredPool* pool,
@@ -281,7 +294,7 @@ int ClientSocketPoolBaseHelper::RequestSocket(
     // re-entrancy issues if the socket pool is doing something else at the
     // time.
     if (group->CanUseAdditionalSocketSlot(max_sockets_per_group_)) {
-      base::MessageLoop::current()->PostTask(
+      base::ThreadTaskRunnerHandle::Get()->PostTask(
           FROM_HERE,
           base::Bind(
               &ClientSocketPoolBaseHelper::TryToCloseSocketsInLayeredPools,
@@ -484,6 +497,12 @@ bool ClientSocketPoolBaseHelper::AssignIdleSocketToRequest(
         idle_socket.socket->WasEverUsed() ?
             ClientSocketHandle::REUSED_IDLE :
             ClientSocketHandle::UNUSED_IDLE;
+
+    // If this socket took multiple attempts to obtain, don't report those
+    // every time it's reused, just to the first user.
+    if (idle_socket.socket->WasEverUsed())
+      idle_socket.socket->ClearConnectionAttempts();
+
     HandOutSocket(
         scoped_ptr<StreamSocket>(idle_socket.socket),
         reuse_type,
@@ -584,9 +603,9 @@ LoadState ClientSocketPoolBaseHelper::GetLoadState(
   return LOAD_STATE_WAITING_FOR_AVAILABLE_SOCKET;
 }
 
-base::DictionaryValue* ClientSocketPoolBaseHelper::GetInfoAsValue(
+scoped_ptr<base::DictionaryValue> ClientSocketPoolBaseHelper::GetInfoAsValue(
     const std::string& name, const std::string& type) const {
-  base::DictionaryValue* dict = new base::DictionaryValue();
+  scoped_ptr<base::DictionaryValue> dict(new base::DictionaryValue());
   dict->SetString("name", name);
   dict->SetString("type", type);
   dict->SetInteger("handed_out_socket_count", handed_out_socket_count_);
@@ -597,7 +616,7 @@ base::DictionaryValue* ClientSocketPoolBaseHelper::GetInfoAsValue(
   dict->SetInteger("pool_generation_number", pool_generation_number_);
 
   if (group_map_.empty())
-    return dict;
+    return dict.Pass();
 
   base::DictionaryValue* all_groups_dict = new base::DictionaryValue();
   for (GroupMap::const_iterator it = group_map_.begin();
@@ -641,7 +660,7 @@ base::DictionaryValue* ClientSocketPoolBaseHelper::GetInfoAsValue(
     all_groups_dict->SetWithoutPathExpansion(it->first, group_dict);
   }
   dict->Set("groups", all_groups_dict);
-  return dict;
+  return dict.Pass();
 }
 
 bool ClientSocketPoolBaseHelper::IdleSocket::IsUsable() const {
@@ -1117,18 +1136,13 @@ void ClientSocketPoolBaseHelper::InvokeUserCallbackLater(
     ClientSocketHandle* handle, const CompletionCallback& callback, int rv) {
   CHECK(!ContainsKey(pending_callback_map_, handle));
   pending_callback_map_[handle] = CallbackResultPair(callback, rv);
-  base::MessageLoop::current()->PostTask(
-      FROM_HERE,
-      base::Bind(&ClientSocketPoolBaseHelper::InvokeUserCallback,
-                 weak_factory_.GetWeakPtr(), handle));
+  base::ThreadTaskRunnerHandle::Get()->PostTask(
+      FROM_HERE, base::Bind(&ClientSocketPoolBaseHelper::InvokeUserCallback,
+                            weak_factory_.GetWeakPtr(), handle));
 }
 
 void ClientSocketPoolBaseHelper::InvokeUserCallback(
     ClientSocketHandle* handle) {
-  // TODO(pkasting): Remove ScopedTracker below once crbug.com/455884 is fixed.
-  tracked_objects::ScopedTracker tracking_profile(
-      FROM_HERE_WITH_EXPLICIT_FUNCTION(
-          "455884 ClientSocketPoolBaseHelper::InvokeUserCallback"));
   PendingCallbackMap::iterator it = pending_callback_map_.find(handle);
 
   // Exit if the request has already been cancelled.
@@ -1323,11 +1337,14 @@ ClientSocketPoolBaseHelper::Group::FindAndRemovePendingRequest(
 scoped_ptr<const ClientSocketPoolBaseHelper::Request>
 ClientSocketPoolBaseHelper::Group::RemovePendingRequest(
     const RequestQueue::Pointer& pointer) {
+  // TODO(eroman): Temporary for debugging http://crbug.com/467797.
+  CHECK(!pointer.is_null());
   scoped_ptr<const Request> request(pointer.value());
   pending_requests_.Erase(pointer);
   // If there are no more requests, kill the backup timer.
   if (pending_requests_.empty())
     backup_job_timer_.Stop();
+  request->CrashIfInvalid();
   return request.Pass();
 }
 

@@ -6,7 +6,6 @@
 
 #include "base/hash.h"
 #include "base/message_loop/message_loop.h"
-#include "base/metrics/histogram.h"
 #include "base/strings/string_util.h"
 #include "net/base/io_buffer.h"
 #include "net/base/net_errors.h"
@@ -499,7 +498,7 @@ std::string EntryImplV3::GetKey() const {
   if (!offset && key_file->GetLength() != static_cast<size_t>(key_len))
     return std::string();
 
-  if (!key_file->Read(WriteInto(&key_, key_len), key_len, offset))
+  if (!key_file->Read(base::WriteInto(&key_, key_len), key_len, offset))
     key_.clear();
   return key_;
 }
@@ -547,7 +546,7 @@ int EntryImplV3::ReadData(int index, int offset, IOBuffer* buf, int buf_len,
 
 int EntryImpl::ReadDataImpl(int index, int offset, IOBuffer* buf, int buf_len,
                             const CompletionCallback& callback) {
-  if (net_log_.GetCaptureMode().enabled()) {
+  if (net_log_.IsCapturing()) {
     net_log_.BeginEvent(
         net::NetLog::TYPE_ENTRY_READ_DATA,
         CreateNetLogReadWriteDataCallback(index, offset, buf_len, false));
@@ -555,7 +554,7 @@ int EntryImpl::ReadDataImpl(int index, int offset, IOBuffer* buf, int buf_len,
 
   int result = InternalReadData(index, offset, buf, buf_len, callback);
 
-  if (result != net::ERR_IO_PENDING && net_log_.GetCaptureMode().enabled()) {
+  if (result != net::ERR_IO_PENDING && net_log_.IsCapturing()) {
     net_log_.EndEvent(
         net::NetLog::TYPE_ENTRY_READ_DATA,
         CreateNetLogReadWriteCompleteCallback(result));
@@ -586,7 +585,7 @@ int EntryImplV3::WriteData(int index, int offset, IOBuffer* buf, int buf_len,
 int EntryImpl::WriteDataImpl(int index, int offset, IOBuffer* buf, int buf_len,
                              const CompletionCallback& callback,
                              bool truncate) {
-  if (net_log_.GetCaptureMode().enabled()) {
+  if (net_log_.IsCapturing()) {
     net_log_.BeginEvent(
         net::NetLog::TYPE_ENTRY_WRITE_DATA,
         CreateNetLogReadWriteDataCallback(index, offset, buf_len, truncate));
@@ -595,7 +594,7 @@ int EntryImpl::WriteDataImpl(int index, int offset, IOBuffer* buf, int buf_len,
   int result = InternalWriteData(index, offset, buf, buf_len, callback,
                                  truncate);
 
-  if (result != net::ERR_IO_PENDING && net_log_.GetCaptureMode().enabled()) {
+  if (result != net::ERR_IO_PENDING && net_log_.IsCapturing()) {
     net_log_.EndEvent(
         net::NetLog::TYPE_ENTRY_WRITE_DATA,
         CreateNetLogReadWriteCompleteCallback(result));

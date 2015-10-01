@@ -7,11 +7,11 @@
 #include <windows.h>
 #include <winhttp.h>
 
-#include "base/metrics/histogram.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "net/base/net_errors.h"
 #include "net/proxy/proxy_info.h"
+#include "net/proxy/proxy_resolver.h"
 #include "url/gurl.h"
 
 #pragma comment(lib, "winhttp.lib")
@@ -20,6 +20,7 @@ using base::TimeDelta;
 using base::TimeTicks;
 
 namespace net {
+namespace {
 
 static void FreeInfo(WINHTTP_PROXY_INFO* info) {
   if (info->lpszProxy)
@@ -28,8 +29,62 @@ static void FreeInfo(WINHTTP_PROXY_INFO* info) {
     GlobalFree(info->lpszProxyBypass);
 }
 
-ProxyResolverWinHttp::ProxyResolverWinHttp()
-    : ProxyResolver(false /*expects_pac_bytes*/), session_handle_(NULL) {
+static Error WinHttpErrorToNetError(DWORD win_http_error) {
+  switch (win_http_error) {
+    case ERROR_WINHTTP_AUTO_PROXY_SERVICE_ERROR:
+    case ERROR_WINHTTP_INTERNAL_ERROR:
+    case ERROR_WINHTTP_INCORRECT_HANDLE_TYPE:
+      return ERR_FAILED;
+    case ERROR_WINHTTP_LOGIN_FAILURE:
+      return ERR_PROXY_AUTH_UNSUPPORTED;
+    case ERROR_WINHTTP_BAD_AUTO_PROXY_SCRIPT:
+      return ERR_PAC_SCRIPT_FAILED;
+    case ERROR_WINHTTP_INVALID_URL:
+    case ERROR_WINHTTP_OPERATION_CANCELLED:
+    case ERROR_WINHTTP_UNABLE_TO_DOWNLOAD_SCRIPT:
+    case ERROR_WINHTTP_UNRECOGNIZED_SCHEME:
+      return ERR_PAC_STATUS_NOT_OK;
+    case ERROR_NOT_ENOUGH_MEMORY:
+      return ERR_INSUFFICIENT_RESOURCES;
+    default:
+      return ERR_FAILED;
+  }
+}
+
+class ProxyResolverWinHttp : public ProxyResolver {
+ public:
+  ProxyResolverWinHttp(
+      const scoped_refptr<ProxyResolverScriptData>& script_data);
+  ~ProxyResolverWinHttp() override;
+
+  // ProxyResolver implementation:
+  int GetProxyForURL(const GURL& url,
+                     ProxyInfo* results,
+                     const CompletionCallback& /*callback*/,
+                     RequestHandle* /*request*/,
+                     const BoundNetLog& /*net_log*/) override;
+  void CancelRequest(RequestHandle request) override;
+
+  LoadState GetLoadState(RequestHandle request) const override;
+
+ private:
+  bool OpenWinHttpSession();
+  void CloseWinHttpSession();
+
+  // Proxy configuration is cached on the session handle.
+  HINTERNET session_handle_;
+
+  const GURL pac_url_;
+
+  DISALLOW_COPY_AND_ASSIGN(ProxyResolverWinHttp);
+};
+
+ProxyResolverWinHttp::ProxyResolverWinHttp(
+    const scoped_refptr<ProxyResolverScriptData>& script_data)
+    : session_handle_(NULL),
+      pac_url_(script_data->type() == ProxyResolverScriptData::TYPE_AUTO_DETECT
+                   ? GURL("http://wpad/wpad.dat")
+                   : script_data->url()) {
 }
 
 ProxyResolverWinHttp::~ProxyResolverWinHttp() {
@@ -83,7 +138,7 @@ int ProxyResolverWinHttp::GetProxyForURL(const GURL& query_url,
           ERROR_WINHTTP_AUTO_PROXY_SERVICE_ERROR == error) {
         CloseWinHttpSession();
       }
-      return ERR_FAILED;  // TODO(darin): Bug 1189288: translate error code.
+      return WinHttpErrorToNetError(error);
     }
   }
 
@@ -129,21 +184,6 @@ LoadState ProxyResolverWinHttp::GetLoadState(RequestHandle request) const {
   return LOAD_STATE_IDLE;
 }
 
-void ProxyResolverWinHttp::CancelSetPacScript() {
-  NOTREACHED();
-}
-
-int ProxyResolverWinHttp::SetPacScript(
-    const scoped_refptr<ProxyResolverScriptData>& script_data,
-    const CompletionCallback& /*callback*/) {
-  if (script_data->type() == ProxyResolverScriptData::TYPE_AUTO_DETECT) {
-    pac_url_ = GURL("http://wpad/wpad.dat");
-  } else {
-    pac_url_ = script_data->url();
-  }
-  return OK;
-}
-
 bool ProxyResolverWinHttp::OpenWinHttpSession() {
   DCHECK(!session_handle_);
   session_handle_ = WinHttpOpen(NULL,
@@ -169,6 +209,21 @@ void ProxyResolverWinHttp::CloseWinHttpSession() {
     WinHttpCloseHandle(session_handle_);
     session_handle_ = NULL;
   }
+}
+
+}  // namespace
+
+ProxyResolverFactoryWinHttp::ProxyResolverFactoryWinHttp()
+    : ProxyResolverFactory(false /*expects_pac_bytes*/) {
+}
+
+int ProxyResolverFactoryWinHttp::CreateProxyResolver(
+    const scoped_refptr<ProxyResolverScriptData>& pac_script,
+    scoped_ptr<ProxyResolver>* resolver,
+    const CompletionCallback& callback,
+    scoped_ptr<Request>* request) {
+  resolver->reset(new ProxyResolverWinHttp(pac_script));
+  return OK;
 }
 
 }  // namespace net

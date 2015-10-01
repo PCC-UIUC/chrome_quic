@@ -7,7 +7,6 @@
 #include "base/bind.h"
 #include "base/bind_helpers.h"
 #include "base/compiler_specific.h"
-#include "base/metrics/histogram.h"
 #include "base/logging.h"
 #include "net/base/net_errors.h"
 #include "net/socket/client_socket_pool.h"
@@ -21,7 +20,9 @@ ClientSocketHandle::ClientSocketHandle()
       reuse_type_(ClientSocketHandle::UNUSED),
       callback_(base::Bind(&ClientSocketHandle::OnIOComplete,
                            base::Unretained(this))),
-      is_ssl_error_(false) {}
+      is_ssl_error_(false),
+      ssl_failure_state_(SSL_FAILURE_NONE) {
+}
 
 ClientSocketHandle::~ClientSocketHandle() {
   Reset();
@@ -72,6 +73,7 @@ void ClientSocketHandle::ResetInternal(bool cancel) {
 void ClientSocketHandle::ResetErrorState() {
   is_ssl_error_ = false;
   ssl_error_response_info_ = HttpResponseInfo();
+  ssl_failure_state_ = SSL_FAILURE_NONE;
   pending_http_proxy_connection_.reset();
 }
 

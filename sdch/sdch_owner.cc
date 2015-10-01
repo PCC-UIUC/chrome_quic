@@ -20,43 +20,6 @@ namespace net {
 
 namespace {
 
-enum DictionaryFate {
-  // A Get-Dictionary header wasn't acted on.
-  DICTIONARY_FATE_GET_IGNORED = 1,
-
-  // A fetch was attempted, but failed.
-  // TODO(rdsmith): Actually record this case.
-  DICTIONARY_FATE_FETCH_FAILED = 2,
-
-  // A successful fetch was dropped on the floor, no space.
-  DICTIONARY_FATE_FETCH_IGNORED_NO_SPACE = 3,
-
-  // A successful fetch was refused by the SdchManager.
-  DICTIONARY_FATE_FETCH_MANAGER_REFUSED = 4,
-
-  // A dictionary was successfully added based on
-  // a Get-Dictionary header in a response.
-  DICTIONARY_FATE_ADD_RESPONSE_TRIGGERED = 5,
-
-  // A dictionary was evicted by an incoming dict.
-  DICTIONARY_FATE_EVICT_FOR_DICT = 6,
-
-  // A dictionary was evicted by memory pressure.
-  DICTIONARY_FATE_EVICT_FOR_MEMORY = 7,
-
-  // A dictionary was evicted on destruction.
-  DICTIONARY_FATE_EVICT_FOR_DESTRUCTION = 8,
-
-  // A dictionary was successfully added based on
-  // persistence from a previous browser revision.
-  DICTIONARY_FATE_ADD_PERSISTENCE_TRIGGERED = 9,
-
-  // A dictionary was unloaded on destruction, but is still present on disk.
-  DICTIONARY_FATE_UNLOAD_FOR_DESTRUCTION = 10,
-
-  DICTIONARY_FATE_MAX = 11
-};
-
 enum PersistenceFailureReason {
   // File didn't exist; is being created.
   PERSISTENCE_FAILURE_REASON_NO_FILE = 1,
@@ -77,23 +40,9 @@ const int kFreshnessLifetimeHours = 24;
 // Dictionaries that have never been used only stay fresh for one hour.
 const int kNeverUsedFreshnessLifetimeHours = 1;
 
-void RecordDictionaryFate(enum DictionaryFate fate) {
-  UMA_HISTOGRAM_ENUMERATION("Sdch3.DictionaryFate", fate, DICTIONARY_FATE_MAX);
-}
-
 void RecordPersistenceFailure(PersistenceFailureReason failure_reason) {
   UMA_HISTOGRAM_ENUMERATION("Sdch3.PersistenceFailureReason", failure_reason,
                             PERSISTENCE_FAILURE_REASON_MAX);
-}
-
-void RecordDictionaryEvictionOrUnload(int use_count, DictionaryFate fate) {
-  DCHECK(fate == DICTIONARY_FATE_EVICT_FOR_DICT ||
-         fate == DICTIONARY_FATE_EVICT_FOR_MEMORY ||
-         fate == DICTIONARY_FATE_EVICT_FOR_DESTRUCTION ||
-         fate == DICTIONARY_FATE_UNLOAD_FOR_DESTRUCTION);
-
-  UMA_HISTOGRAM_COUNTS_100("Sdch3.DictionaryUseCount", use_count);
-  RecordDictionaryFate(fate);
 }
 
 // Schema specifications and access routines.
@@ -149,11 +98,12 @@ base::DictionaryValue* GetPersistentStoreDictionaryMap(
 // above schema, removing anything previously in the store under
 // kPreferenceName.
 void InitializePrefStore(WriteablePrefStore* store) {
-  base::DictionaryValue* empty_store(new base::DictionaryValue);
+  scoped_ptr<base::DictionaryValue> empty_store(new base::DictionaryValue);
   empty_store->SetInteger(kVersionKey, kVersion);
   empty_store->Set(kDictionariesKey,
                    make_scoped_ptr(new base::DictionaryValue));
-  store->SetValue(kPreferenceName, empty_store);
+  store->SetValue(kPreferenceName, empty_store.Pass(),
+                  WriteablePrefStore::DEFAULT_PREF_WRITE_FLAGS);
 }
 
 // A class to allow iteration over all dictionaries in the pref store, and
@@ -173,7 +123,7 @@ class DictionaryPreferenceIterator {
   void Advance();
 
   const std::string& server_hash() const { return server_hash_; }
-  const GURL url() const { return url_; }
+  const GURL& url() const { return url_; }
   base::Time last_used() const { return last_used_; }
   int use_count() const { return use_count_; }
   int size() const { return size_; }
@@ -241,7 +191,10 @@ class ScopedPrefNotifier {
   // lifetime of this object.
   ScopedPrefNotifier(WriteablePrefStore* pref_store)
       : pref_store_(pref_store) {}
-  ~ScopedPrefNotifier() { pref_store_->ReportValueChanged(kPreferenceName); }
+  ~ScopedPrefNotifier() {
+    pref_store_->ReportValueChanged(
+        kPreferenceName, WriteablePrefStore::DEFAULT_PREF_WRITE_FLAGS);
+  }
 
  private:
   WriteablePrefStore* pref_store_;
@@ -266,17 +219,36 @@ const size_t SdchOwner::kMaxTotalDictionarySize = 20 * 1000 * 1000;
 // amount of space available in storage.
 const size_t SdchOwner::kMinSpaceForDictionaryFetch = 50 * 1000;
 
+void SdchOwner::RecordDictionaryFate(enum DictionaryFate fate) {
+  UMA_HISTOGRAM_ENUMERATION("Sdch3.DictionaryFate", fate, DICTIONARY_FATE_MAX);
+}
+
+void SdchOwner::RecordDictionaryEvictionOrUnload(const std::string& server_hash,
+                                                 size_t size,
+                                                 int use_count,
+                                                 DictionaryFate fate) {
+  DCHECK(fate == DICTIONARY_FATE_EVICT_FOR_DICT ||
+         fate == DICTIONARY_FATE_EVICT_FOR_MEMORY ||
+         fate == DICTIONARY_FATE_EVICT_FOR_DESTRUCTION ||
+         fate == DICTIONARY_FATE_UNLOAD_FOR_DESTRUCTION);
+
+  UMA_HISTOGRAM_COUNTS_100("Sdch3.DictionaryUseCount", use_count);
+  RecordDictionaryFate(fate);
+
+  DCHECK(load_times_.count(server_hash) == 1);
+  base::Time now = clock_->Now();
+  base::TimeDelta dict_lifetime = now - load_times_[server_hash];
+  consumed_byte_seconds_.push_back(size * dict_lifetime.InMilliseconds());
+  load_times_.erase(server_hash);
+}
+
 SdchOwner::SdchOwner(SdchManager* sdch_manager, URLRequestContext* context)
-    : manager_(sdch_manager->GetWeakPtr()),
+    : manager_(sdch_manager),
       fetcher_(new SdchDictionaryFetcher(context)),
       total_dictionary_bytes_(0),
       clock_(new base::DefaultClock),
       max_total_dictionary_size_(kMaxTotalDictionarySize),
       min_space_for_dictionary_fetch_(kMinSpaceForDictionaryFetch),
-#if defined(OS_CHROMEOS)
-      // For debugging http://crbug.com/454198; remove when resolved.
-      destroyed_(0),
-#endif
       memory_pressure_listener_(
           base::Bind(&SdchOwner::OnMemoryPressure,
                      // Because |memory_pressure_listener_| is owned by
@@ -285,31 +257,21 @@ SdchOwner::SdchOwner(SdchManager* sdch_manager, URLRequestContext* context)
                      base::Unretained(this))),
       in_memory_pref_store_(new ValueMapPrefStore()),
       external_pref_store_(nullptr),
-      pref_store_(in_memory_pref_store_.get()) {
-#if defined(OS_CHROMEOS)
-  // For debugging http://crbug.com/454198; remove when resolved.
-  CHECK(clock_.get());
-#endif
+      pref_store_(in_memory_pref_store_.get()),
+      creation_time_(clock_->Now()) {
   manager_->AddObserver(this);
   InitializePrefStore(pref_store_);
 }
 
 SdchOwner::~SdchOwner() {
-#if defined(OS_CHROMEOS)
-  // For debugging http://crbug.com/454198; remove when resolved.
-  CHECK_EQ(0u, destroyed_);
-  CHECK(clock_.get());
-  clock_.reset();
-  CHECK(manager_.get());
-#endif
-
   for (DictionaryPreferenceIterator it(pref_store_); !it.IsAtEnd();
        it.Advance()) {
     int new_uses = it.use_count() - use_counts_at_load_[it.server_hash()];
     DictionaryFate fate = IsPersistingDictionaries() ?
                           DICTIONARY_FATE_UNLOAD_FOR_DESTRUCTION :
                           DICTIONARY_FATE_EVICT_FOR_DESTRUCTION;
-    RecordDictionaryEvictionOrUnload(new_uses, fate);
+    RecordDictionaryEvictionOrUnload(it.server_hash(), it.size(), new_uses,
+                                     fate);
   }
   manager_->RemoveObserver(this);
 
@@ -318,9 +280,17 @@ SdchOwner::~SdchOwner() {
   if (external_pref_store_)
     external_pref_store_->RemoveObserver(this);
 
-#if defined(OS_CHROMEOS)
-  destroyed_ = 0xdeadbeef;
-#endif
+  int64 object_lifetime =
+      (clock_->Now() - creation_time_).InMilliseconds();
+  for (const auto& val : consumed_byte_seconds_) {
+    if (object_lifetime > 0) {
+      // Objects that are created and immediately destroyed don't add any memory
+      // pressure over time (and also cause a crash here).
+      UMA_HISTOGRAM_MEMORY_KB("Sdch3.TimeWeightedMemoryUse",
+                              val / object_lifetime);
+    }
+  }
+
 }
 
 void SdchOwner::EnablePersistentStorage(PersistentPrefStore* pref_store) {
@@ -369,12 +339,6 @@ void SdchOwner::OnDictionaryFetched(base::Time last_used,
     }
   };
 
-#if defined(OS_CHROMEOS)
-  // For debugging http://crbug.com/454198; remove when resolved.
-  CHECK_EQ(0u, destroyed_);
-  CHECK(clock_.get());
-#endif
-
   if (!was_from_cache)
     UMA_HISTOGRAM_COUNTS("Sdch3.NetworkBytesSpent", dictionary_text.size());
 
@@ -401,12 +365,6 @@ void SdchOwner::OnDictionaryFetched(base::Time last_used,
       recoverable_bytes += it.size();
     }
   }
-
-#if defined(OS_CHROMEOS)
-  // For debugging http://crbug.com/454198; remove when resolved.
-  CHECK_EQ(0u, destroyed_);
-  CHECK(clock_.get());
-#endif
 
   if (total_dictionary_bytes_ + dictionary_text.size() - recoverable_bytes >
       max_total_dictionary_size_) {
@@ -454,7 +412,9 @@ void SdchOwner::OnDictionaryFetched(base::Time last_used,
 
     int new_uses = stale_it->use_count -
         use_counts_at_load_[stale_it->server_hash];
-    RecordDictionaryEvictionOrUnload(new_uses,
+    RecordDictionaryEvictionOrUnload(stale_it->server_hash,
+                                     stale_it->dictionary_size,
+                                     new_uses,
                                      DICTIONARY_FATE_EVICT_FOR_DICT);
 
     ++stale_it;
@@ -475,12 +435,6 @@ void SdchOwner::OnDictionaryFetched(base::Time last_used,
 
   total_dictionary_bytes_ += dictionary_text.size();
 
-#if defined(OS_CHROMEOS)
-  // For debugging http://crbug.com/454198; remove when resolved.
-  CHECK_EQ(0u, destroyed_);
-  CHECK(clock_.get());
-#endif
-
   // Record the addition in the pref store.
   scoped_ptr<base::DictionaryValue> dictionary_description(
       new base::DictionaryValue());
@@ -491,10 +445,15 @@ void SdchOwner::OnDictionaryFetched(base::Time last_used,
   dictionary_description->SetInteger(kDictionarySizeKey,
                                      dictionary_text.size());
   pref_dictionary_map->Set(server_hash, dictionary_description.Pass());
+  load_times_[server_hash] = clock_->Now();
 }
 
-void SdchOwner::OnDictionaryUsed(SdchManager* manager,
-                                 const std::string& server_hash) {
+void SdchOwner::OnDictionaryAdded(const GURL& dictionary_url,
+                                  const std::string& server_hash) { }
+
+void SdchOwner::OnDictionaryRemoved(const std::string& server_hash) { }
+
+void SdchOwner::OnDictionaryUsed(const std::string& server_hash) {
   base::Time now(clock_->Now());
   base::DictionaryValue* pref_dictionary_map =
       GetPersistentStoreDictionaryMap(pref_store_);
@@ -512,22 +471,16 @@ void SdchOwner::OnDictionaryUsed(SdchManager* manager,
   }
   base::DictionaryValue* specific_dictionary_map = nullptr;
   success = value->GetAsDictionary(&specific_dictionary_map);
-  // TODO(rdsmith); Switch back to DCHECK() after http://crbug.com/454198 is
-  // resolved.
-  CHECK(success);
+  DCHECK(success);
 
   double last_used_seconds_since_epoch = 0.0;
   success = specific_dictionary_map->GetDouble(kDictionaryLastUsedKey,
                                                &last_used_seconds_since_epoch);
-  // TODO(rdsmith); Switch back to DCHECK() after http://crbug.com/454198 is
-  // resolved.
-  CHECK(success);
+  DCHECK(success);
   int use_count = 0;
   success =
       specific_dictionary_map->GetInteger(kDictionaryUseCountKey, &use_count);
-  // TODO(rdsmith); Switch back to DCHECK() after http://crbug.com/454198 is
-  // resolved.
-  CHECK(success);
+  DCHECK(success);
 
   if (use_counts_at_load_.count(server_hash) == 0) {
     use_counts_at_load_[server_hash] = use_count;
@@ -547,21 +500,8 @@ void SdchOwner::OnDictionaryUsed(SdchManager* manager,
   specific_dictionary_map->SetInteger(kDictionaryUseCountKey, use_count + 1);
 }
 
-void SdchOwner::OnGetDictionary(SdchManager* manager,
-                                const GURL& request_url,
+void SdchOwner::OnGetDictionary(const GURL& request_url,
                                 const GURL& dictionary_url) {
-#if defined(OS_CHROMEOS)
-  // For debugging http://crbug.com/454198; remove when resolved.
-  char url_buf[128];
-  if (0u != destroyed_ || !clock_.get()) {
-    base::strlcpy(url_buf, request_url.spec().c_str(), arraysize(url_buf));
-  }
-  base::debug::Alias(url_buf);
-
-  CHECK_EQ(0u, destroyed_);
-  CHECK(clock_.get());
-#endif
-
   base::Time stale_boundary(clock_->Now() - base::TimeDelta::FromDays(1));
   size_t avail_bytes = 0;
   for (DictionaryPreferenceIterator it(pref_store_); !it.IsAtEnd();
@@ -590,7 +530,7 @@ void SdchOwner::OnGetDictionary(SdchManager* manager,
                                 base::Unretained(this), base::Time(), 0));
 }
 
-void SdchOwner::OnClearDictionaries(SdchManager* manager) {
+void SdchOwner::OnClearDictionaries() {
   total_dictionary_bytes_ = 0;
   fetcher_->Cancel();
 
@@ -636,9 +576,6 @@ void SdchOwner::OnInitializationCompleted(bool succeeded) {
     case PersistentPrefStore::PREF_READ_ERROR_FILE_OTHER:
     case PersistentPrefStore::PREF_READ_ERROR_FILE_LOCKED:
     case PersistentPrefStore::PREF_READ_ERROR_JSON_REPEAT:
-    case PersistentPrefStore::PREF_READ_ERROR_LEVELDB_IO:
-    case PersistentPrefStore::PREF_READ_ERROR_LEVELDB_CORRUPTION_READ_ONLY:
-    case PersistentPrefStore::PREF_READ_ERROR_LEVELDB_CORRUPTION:
       RecordPersistenceFailure(PERSISTENCE_FAILURE_REASON_READ_FAILED);
       break;
 
@@ -685,12 +622,6 @@ void SdchOwner::OnInitializationCompleted(bool succeeded) {
 
 void SdchOwner::SetClockForTesting(scoped_ptr<base::Clock> clock) {
   clock_ = clock.Pass();
-
-#if defined(OS_CHROMEOS)
-  // For debugging http://crbug.com/454198; remove when resolved.
-  CHECK_EQ(0u, destroyed_);
-  CHECK(clock_.get());
-#endif
 }
 
 int SdchOwner::GetDictionaryCountForTesting() const {
@@ -723,7 +654,9 @@ void SdchOwner::OnMemoryPressure(
   for (DictionaryPreferenceIterator it(pref_store_); !it.IsAtEnd();
        it.Advance()) {
     int new_uses = it.use_count() - use_counts_at_load_[it.server_hash()];
-    RecordDictionaryEvictionOrUnload(new_uses,
+    RecordDictionaryEvictionOrUnload(it.server_hash(),
+                                     it.size(),
+                                     new_uses,
                                      DICTIONARY_FATE_EVICT_FOR_MEMORY);
   }
 

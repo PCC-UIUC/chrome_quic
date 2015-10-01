@@ -138,17 +138,14 @@ class SSLClientSocketPoolTest
   }
 
   scoped_refptr<SSLSocketParams> SSLParams(ProxyServer::Scheme proxy,
-                                           bool want_spdy_over_npn) {
+                                           bool expect_spdy) {
     return make_scoped_refptr(new SSLSocketParams(
         proxy == ProxyServer::SCHEME_DIRECT ? direct_transport_socket_params_
                                             : NULL,
         proxy == ProxyServer::SCHEME_SOCKS5 ? socks_socket_params_ : NULL,
         proxy == ProxyServer::SCHEME_HTTP ? http_proxy_socket_params_ : NULL,
-        HostPortPair("host", 443),
-        ssl_config_,
-        PRIVACY_MODE_DISABLED,
-        0,
-        want_spdy_over_npn));
+        HostPortPair("host", 443), ssl_config_, PRIVACY_MODE_DISABLED, 0,
+        expect_spdy));
   }
 
   void AddAuthToCache() {
@@ -208,8 +205,7 @@ class SSLClientSocketPoolTest
 INSTANTIATE_TEST_CASE_P(NextProto,
                         SSLClientSocketPoolTest,
                         testing::Values(kProtoSPDY31,
-                                        kProtoSPDY4_14,
-                                        kProtoSPDY4));
+                                        kProtoHTTP2));
 
 TEST_P(SSLClientSocketPoolTest, TCPFail) {
   StaticSocketDataProvider data;
@@ -227,6 +223,8 @@ TEST_P(SSLClientSocketPoolTest, TCPFail) {
   EXPECT_FALSE(handle.is_initialized());
   EXPECT_FALSE(handle.socket());
   EXPECT_FALSE(handle.is_ssl_error());
+  ASSERT_EQ(1u, handle.connection_attempts().size());
+  EXPECT_EQ(ERR_CONNECTION_FAILED, handle.connection_attempts()[0].result);
 }
 
 TEST_P(SSLClientSocketPoolTest, TCPFailAsync) {
@@ -250,6 +248,8 @@ TEST_P(SSLClientSocketPoolTest, TCPFailAsync) {
   EXPECT_FALSE(handle.is_initialized());
   EXPECT_FALSE(handle.socket());
   EXPECT_FALSE(handle.is_ssl_error());
+  ASSERT_EQ(1u, handle.connection_attempts().size());
+  EXPECT_EQ(ERR_CONNECTION_FAILED, handle.connection_attempts()[0].result);
 }
 
 TEST_P(SSLClientSocketPoolTest, BasicDirect) {
@@ -271,6 +271,7 @@ TEST_P(SSLClientSocketPoolTest, BasicDirect) {
   EXPECT_TRUE(handle.is_initialized());
   EXPECT_TRUE(handle.socket());
   TestLoadTimingInfo(handle);
+  EXPECT_EQ(0u, handle.connection_attempts().size());
 }
 
 // Make sure that SSLConnectJob passes on its priority to its

@@ -4,34 +4,35 @@
 
 #include "net/url_request/url_request_filter.h"
 
-#include <set>
-
 #include "base/logging.h"
+#include "base/message_loop/message_loop.h"
 #include "base/stl_util.h"
+#include "net/url_request/url_request.h"
 #include "net/url_request/url_request_job_factory_impl.h"
 
 namespace net {
 
 namespace {
 
-class URLRequestFilterInterceptor : public URLRequestInterceptor {
- public:
-  explicit URLRequestFilterInterceptor(URLRequest::ProtocolFactory* factory)
-      : factory_(factory) {}
-  ~URLRequestFilterInterceptor() override {}
+// When adding interceptors, DCHECK that this function returns true.
+bool OnMessageLoopForInterceptorAddition() {
+  base::MessageLoop* message_loop = base::MessageLoop::current();
+  // Return true if called on a MessageLoopForIO or if there is no MessageLoop.
+  // Checking for a MessageLoopForIO is a best effort at determining whether the
+  // current thread is a networking thread.  Allowing cases without a
+  // MessageLoop is required for some tests where there is no chance to insert
+  // an interceptor between a networking thread being started and a resource
+  // request being issued.
+  return message_loop == nullptr ||
+         message_loop->type() == base::MessageLoop::TYPE_IO;
+}
 
-  // URLRequestInterceptor implementation.
-  URLRequestJob* MaybeInterceptRequest(
-      URLRequest* request,
-      NetworkDelegate* network_delegate) const override {
-    return factory_(request, network_delegate, request->url().scheme());
-  }
-
- private:
-  URLRequest::ProtocolFactory* factory_;
-
-  DISALLOW_COPY_AND_ASSIGN(URLRequestFilterInterceptor);
-};
+// When removing interceptors, DCHECK that this function returns true.
+bool OnMessageLoopForInterceptorRemoval() {
+  // Checking for a MessageLoopForIO is a best effort at determining whether the
+  // current thread is a networking thread.
+  return base::MessageLoopForIO::IsCurrent();
+}
 
 }  // namespace
 
@@ -39,23 +40,17 @@ URLRequestFilter* URLRequestFilter::shared_instance_ = NULL;
 
 // static
 URLRequestFilter* URLRequestFilter::GetInstance() {
+  DCHECK(OnMessageLoopForInterceptorAddition());
   if (!shared_instance_)
     shared_instance_ = new URLRequestFilter;
   return shared_instance_;
-}
-
-void URLRequestFilter::AddHostnameHandler(const std::string& scheme,
-    const std::string& hostname, URLRequest::ProtocolFactory* factory) {
-  AddHostnameInterceptor(
-      scheme, hostname,
-      scoped_ptr<URLRequestInterceptor>(
-          new URLRequestFilterInterceptor(factory)));
 }
 
 void URLRequestFilter::AddHostnameInterceptor(
     const std::string& scheme,
     const std::string& hostname,
     scoped_ptr<URLRequestInterceptor> interceptor) {
+  DCHECK(OnMessageLoopForInterceptorAddition());
   DCHECK_EQ(0u, hostname_interceptor_map_.count(make_pair(scheme, hostname)));
   hostname_interceptor_map_[make_pair(scheme, hostname)] =
       interceptor.release();
@@ -75,6 +70,7 @@ void URLRequestFilter::AddHostnameInterceptor(
 
 void URLRequestFilter::RemoveHostnameHandler(const std::string& scheme,
                                              const std::string& hostname) {
+  DCHECK(OnMessageLoopForInterceptorRemoval());
   HostnameInterceptorMap::iterator it =
       hostname_interceptor_map_.find(make_pair(scheme, hostname));
   DCHECK(it != hostname_interceptor_map_.end());
@@ -86,18 +82,10 @@ void URLRequestFilter::RemoveHostnameHandler(const std::string& scheme,
   // handlers.
 }
 
-bool URLRequestFilter::AddUrlHandler(
-    const GURL& url,
-    URLRequest::ProtocolFactory* factory) {
-  return AddUrlInterceptor(
-      url,
-      scoped_ptr<URLRequestInterceptor>(
-          new URLRequestFilterInterceptor(factory)));
-}
-
 bool URLRequestFilter::AddUrlInterceptor(
     const GURL& url,
     scoped_ptr<URLRequestInterceptor> interceptor) {
+  DCHECK(OnMessageLoopForInterceptorAddition());
   if (!url.is_valid())
     return false;
   DCHECK_EQ(0u, url_interceptor_map_.count(url.spec()));
@@ -111,6 +99,7 @@ bool URLRequestFilter::AddUrlInterceptor(
 }
 
 void URLRequestFilter::RemoveUrlHandler(const GURL& url) {
+  DCHECK(OnMessageLoopForInterceptorRemoval());
   URLInterceptorMap::iterator it = url_interceptor_map_.find(url.spec());
   DCHECK(it != url_interceptor_map_.end());
 
@@ -122,6 +111,7 @@ void URLRequestFilter::RemoveUrlHandler(const GURL& url) {
 }
 
 void URLRequestFilter::ClearHandlers() {
+  DCHECK(OnMessageLoopForInterceptorRemoval());
   STLDeleteValues(&url_interceptor_map_);
   STLDeleteValues(&hostname_interceptor_map_);
   hit_count_ = 0;
@@ -130,6 +120,7 @@ void URLRequestFilter::ClearHandlers() {
 URLRequestJob* URLRequestFilter::MaybeInterceptRequest(
     URLRequest* request,
     NetworkDelegate* network_delegate) const {
+  DCHECK(base::MessageLoopForIO::current());
   URLRequestJob* job = NULL;
   if (!request->url().is_valid())
     return NULL;
@@ -160,10 +151,12 @@ URLRequestJob* URLRequestFilter::MaybeInterceptRequest(
 }
 
 URLRequestFilter::URLRequestFilter() : hit_count_(0) {
+  DCHECK(OnMessageLoopForInterceptorAddition());
   URLRequestJobFactoryImpl::SetInterceptorForTesting(this);
 }
 
 URLRequestFilter::~URLRequestFilter() {
+  DCHECK(OnMessageLoopForInterceptorRemoval());
   URLRequestJobFactoryImpl::SetInterceptorForTesting(NULL);
 }
 

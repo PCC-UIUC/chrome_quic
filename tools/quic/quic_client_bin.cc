@@ -56,9 +56,10 @@
 #include "net/quic/quic_protocol.h"
 #include "net/quic/quic_server_id.h"
 #include "net/quic/quic_utils.h"
+#include "net/spdy/spdy_header_block.h"
 #include "net/tools/epoll_server/epoll_server.h"
 #include "net/tools/quic/quic_client.h"
-#include "net/tools/quic/spdy_utils.h"
+#include "net/tools/quic/spdy_balsa_utils.h"
 #include "net/tools/quic/synchronous_host_resolver.h"
 #include "url/gurl.h"
 
@@ -68,7 +69,6 @@ using net::ProofVerifierChromium;
 using net::TransportSecurityState;
 using std::cout;
 using std::cerr;
-using std::map;
 using std::string;
 using std::vector;
 using std::endl;
@@ -92,6 +92,8 @@ bool FLAGS_version_mismatch_ok = false;
 // If true, an HTTP response code of 3xx is considered to be a successful
 // response, otherwise a failure.
 bool FLAGS_redirect_is_success = true;
+// Initial MTU of the connection.
+int32 FLAGS_initial_mtu = 0;
 
 int main(int argc, char *argv[]) {
   base::CommandLine::Init(argc, argv);
@@ -120,7 +122,9 @@ int main(int argc, char *argv[]) {
         "--version_mismatch_ok       if specified a version mismatch in the "
         "handshake is not considered a failure\n"
         "--redirect_is_success       if specified an HTTP response code of 3xx "
-        "is considered to be a successful response, otherwise a failure\n";
+        "is considered to be a successful response, otherwise a failure\n"
+        "--initial_mtu=<initial_mtu> specify the initial MTU of the connection"
+        "\n";
     cout << help_str;
     exit(0);
   }
@@ -155,13 +159,21 @@ int main(int argc, char *argv[]) {
   if (line->HasSwitch("redirect_is_success")) {
     FLAGS_redirect_is_success = true;
   }
+  if (line->HasSwitch("initial_mtu")) {
+    if (!base::StringToInt(line->GetSwitchValueASCII("initial_mtu"),
+                           &FLAGS_initial_mtu)) {
+      std::cerr << "--initial_mtu must be an integer\n";
+      return 1;
+    }
+  }
 
   VLOG(1) << "server host: " << FLAGS_host << " port: " << FLAGS_port
           << " body: " << FLAGS_body << " headers: " << FLAGS_headers
           << " quiet: " << FLAGS_quiet
           << " quic-version: " << FLAGS_quic_version
           << " version_mismatch_ok: " << FLAGS_version_mismatch_ok
-          << " redirect_is_success: " << FLAGS_redirect_is_success;
+          << " redirect_is_success: " << FLAGS_redirect_is_success
+          << " initial_mtu: " << FLAGS_initial_mtu;
 
   base::AtExitManager exit_manager;
 
@@ -190,9 +202,8 @@ int main(int argc, char *argv[]) {
   VLOG(1) << "Resolved " << host << " to " << host_port << endl;
 
   // Build the client, and try to connect.
-  bool is_https = (FLAGS_port == 443);
   net::EpollServer epoll_server;
-  net::QuicServerId server_id(host, FLAGS_port, is_https,
+  net::QuicServerId server_id(url.host(), FLAGS_port, /*is_https=*/true,
                               net::PRIVACY_MODE_DISABLED);
   net::QuicVersionVector versions = net::QuicSupportedVersions();
   if (FLAGS_quic_version != -1) {
@@ -203,14 +214,13 @@ int main(int argc, char *argv[]) {
                                 versions, &epoll_server);
   scoped_ptr<CertVerifier> cert_verifier;
   scoped_ptr<TransportSecurityState> transport_security_state;
-  if (is_https) {
-    // For secure QUIC we need to verify the cert chain.a
-    cert_verifier.reset(CertVerifier::CreateDefault());
-    transport_security_state.reset(new TransportSecurityState);
-    // TODO(rtenneti): Fix "Proof invalid: Missing context" error.
-    client.SetProofVerifier(new ProofVerifierChromium(
-        cert_verifier.get(), transport_security_state.get()));
-  }
+  client.set_initial_max_packet_length(
+      FLAGS_initial_mtu != 0 ? FLAGS_initial_mtu : net::kDefaultMaxPacketSize);
+  // For secure QUIC we need to verify the cert chain.
+  cert_verifier = CertVerifier::CreateDefault();
+  transport_security_state.reset(new TransportSecurityState);
+  client.SetProofVerifier(new ProofVerifierChromium(
+      cert_verifier.get(), nullptr, transport_security_state.get()));
   if (!client.Initialize()) {
     cerr << "Failed to initialize client." << endl;
     return 1;
@@ -218,7 +228,7 @@ int main(int argc, char *argv[]) {
   if (!client.Connect()) {
     net::QuicErrorCode error = client.session()->error();
     if (FLAGS_version_mismatch_ok && error == net::QUIC_INVALID_VERSION) {
-      cout << "Server talks QUIC, but none of the versions supoorted by "
+      cout << "Server talks QUIC, but none of the versions supported by "
            << "this client: " << QuicVersionVectorToString(versions) << endl;
       // Version mismatch is not deemed a failure.
       return 0;
@@ -235,16 +245,16 @@ int main(int argc, char *argv[]) {
       FLAGS_body.empty() ? "GET" : "POST", url.spec(), "HTTP/1.1");
 
   // Append any additional headers supplied on the command line.
-  vector<string> headers_tokenized;
-  Tokenize(FLAGS_headers, ";", &headers_tokenized);
-  for (size_t i = 0; i < headers_tokenized.size(); ++i) {
+  for (const std::string& header :
+       base::SplitString(FLAGS_headers, ";", base::KEEP_WHITESPACE,
+                         base::SPLIT_WANT_NONEMPTY)) {
     string sp;
-    base::TrimWhitespaceASCII(headers_tokenized[i], base::TRIM_ALL, &sp);
+    base::TrimWhitespaceASCII(header, base::TRIM_ALL, &sp);
     if (sp.empty()) {
       continue;
     }
-    vector<string> kv;
-    base::SplitString(sp, ':', &kv);
+    vector<string> kv =
+        base::SplitString(sp, ":", base::TRIM_WHITESPACE, base::SPLIT_WANT_ALL);
     CHECK_EQ(2u, kv.size());
     string key;
     base::TrimWhitespaceASCII(kv[0], base::TRIM_ALL, &key);
@@ -257,8 +267,8 @@ int main(int argc, char *argv[]) {
   client.set_store_response(true);
 
   // Send the request.
-  map<string, string> header_block =
-      net::tools::SpdyUtils::RequestHeadersToSpdyHeaders(
+  net::SpdyHeaderBlock header_block =
+      net::tools::SpdyBalsaUtils::RequestHeadersToSpdyHeaders(
           headers, client.session()->connection()->version());
   client.SendRequestAndWaitForResponse(headers, FLAGS_body, /*fin=*/true);
 
@@ -266,7 +276,7 @@ int main(int argc, char *argv[]) {
   if (!FLAGS_quiet) {
     cout << "Request:" << endl;
     cout << "headers:" << endl;
-    for (const std::pair<string, string>& kv : header_block) {
+    for (const auto& kv : header_block) {
       cout << " " << kv.first << ": " << kv.second << endl;
     }
     cout << "body: " << FLAGS_body << endl;

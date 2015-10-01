@@ -8,39 +8,29 @@
 #include "mojo/common/url_type_converters.h"
 #include "net/base/net_errors.h"
 #include "net/log/net_log.h"
-#include "net/proxy/load_state_change_coalescer.h"
+#include "net/proxy/mojo_proxy_resolver_v8_tracing_bindings.h"
 #include "net/proxy/mojo_proxy_type_converters.h"
 #include "net/proxy/proxy_info.h"
 #include "net/proxy/proxy_resolver_script_data.h"
+#include "net/proxy/proxy_resolver_v8_tracing.h"
 
 namespace net {
-namespace {
-const int kLoadStateChangeCoalesceTimeoutMilliseconds = 10;
-}
 
-class MojoProxyResolverImpl::Job : public mojo::ErrorHandler {
+class MojoProxyResolverImpl::Job {
  public:
   Job(interfaces::ProxyResolverRequestClientPtr client,
       MojoProxyResolverImpl* resolver,
       const GURL& url);
-  ~Job() override;
+  ~Job();
 
   void Start();
 
-  // Invoked when the LoadState for this job changes.
-  void LoadStateChanged(LoadState load_state);
-
-  net::ProxyResolver::RequestHandle request_handle() { return request_handle_; }
-
  private:
-  // mojo::ErrorHandler override.
-  // This is invoked in response to the client disconnecting, indicating
-  // cancellation.
-  void OnConnectionError() override;
+  // Mojo error handler. This is invoked in response to the client
+  // disconnecting, indicating cancellation.
+  void OnConnectionError();
 
   void GetProxyDone(int error);
-
-  void SendLoadStateChanged(LoadState load_state);
 
   MojoProxyResolverImpl* resolver_;
 
@@ -49,39 +39,17 @@ class MojoProxyResolverImpl::Job : public mojo::ErrorHandler {
   GURL url_;
   net::ProxyResolver::RequestHandle request_handle_;
   bool done_;
-  LoadStateChangeCoalescer load_state_change_coalescer_;
 
   DISALLOW_COPY_AND_ASSIGN(Job);
 };
 
 MojoProxyResolverImpl::MojoProxyResolverImpl(
-    scoped_ptr<net::ProxyResolver> resolver)
+    scoped_ptr<ProxyResolverV8Tracing> resolver)
     : resolver_(resolver.Pass()) {
-  DCHECK(resolver_->expects_pac_bytes());
 }
 
 MojoProxyResolverImpl::~MojoProxyResolverImpl() {
-  if (!set_pac_script_requests_.empty())
-    resolver_->CancelSetPacScript();
   STLDeleteElements(&resolve_jobs_);
-}
-
-void MojoProxyResolverImpl::LoadStateChanged(
-    net::ProxyResolver::RequestHandle handle,
-    LoadState load_state) {
-  auto it = request_handle_to_job_.find(handle);
-  DCHECK(it != request_handle_to_job_.end());
-  it->second->LoadStateChanged(load_state);
-}
-
-void MojoProxyResolverImpl::SetPacScript(
-    const mojo::String& data,
-    const mojo::Callback<void(int32_t)>& callback) {
-  DVLOG(1) << "SetPacScript(" << data << ")";
-  set_pac_script_requests_.push(
-      SetPacScriptRequest(ProxyResolverScriptData::FromUTF8(data), callback));
-  if (set_pac_script_requests_.size() == 1)
-    StartSetPacScript();
 }
 
 void MojoProxyResolverImpl::GetProxyForUrl(
@@ -95,31 +63,9 @@ void MojoProxyResolverImpl::GetProxyForUrl(
 }
 
 void MojoProxyResolverImpl::DeleteJob(Job* job) {
-  if (job->request_handle())
-    request_handle_to_job_.erase(job->request_handle());
-
   size_t num_erased = resolve_jobs_.erase(job);
   DCHECK(num_erased);
   delete job;
-}
-
-void MojoProxyResolverImpl::StartSetPacScript() {
-  DCHECK(!set_pac_script_requests_.empty());
-  int result = resolver_->SetPacScript(
-      set_pac_script_requests_.front().script_data,
-      base::Bind(&MojoProxyResolverImpl::SetPacScriptDone,
-                 base::Unretained(this)));
-  if (result != ERR_IO_PENDING)
-    SetPacScriptDone(result);
-}
-
-void MojoProxyResolverImpl::SetPacScriptDone(int result) {
-  DVLOG(1) << "SetPacScript finished with error " << result;
-  DCHECK(!set_pac_script_requests_.empty());
-  set_pac_script_requests_.front().callback.Run(result);
-  set_pac_script_requests_.pop();
-  if (!set_pac_script_requests_.empty())
-    StartSetPacScript();
 }
 
 MojoProxyResolverImpl::Job::Job(
@@ -130,14 +76,7 @@ MojoProxyResolverImpl::Job::Job(
       client_(client.Pass()),
       url_(url),
       request_handle_(nullptr),
-      done_(false),
-      load_state_change_coalescer_(
-          base::Bind(&MojoProxyResolverImpl::Job::SendLoadStateChanged,
-                     base::Unretained(this)),
-          base::TimeDelta::FromMilliseconds(
-              kLoadStateChangeCoalesceTimeoutMilliseconds),
-          LOAD_STATE_RESOLVING_PROXY_FOR_URL) {
-}
+      done_(false) {}
 
 MojoProxyResolverImpl::Job::~Job() {
   if (request_handle_ && !done_)
@@ -145,20 +84,13 @@ MojoProxyResolverImpl::Job::~Job() {
 }
 
 void MojoProxyResolverImpl::Job::Start() {
-  int result = resolver_->resolver_->GetProxyForURL(
+  resolver_->resolver_->GetProxyForURL(
       url_, &result_, base::Bind(&Job::GetProxyDone, base::Unretained(this)),
-      &request_handle_, BoundNetLog());
-  if (result != ERR_IO_PENDING) {
-    GetProxyDone(result);
-    return;
-  }
-  client_.set_error_handler(this);
-  resolver_->request_handle_to_job_.insert(
-      std::make_pair(request_handle_, this));
-}
-
-void MojoProxyResolverImpl::Job::LoadStateChanged(LoadState load_state) {
-  load_state_change_coalescer_.LoadStateChanged(load_state);
+      &request_handle_,
+      make_scoped_ptr(new MojoProxyResolverV8TracingBindings<
+                      interfaces::ProxyResolverRequestClient>(client_.get())));
+  client_.set_connection_error_handler(base::Bind(
+      &MojoProxyResolverImpl::Job::OnConnectionError, base::Unretained(this)));
 }
 
 void MojoProxyResolverImpl::Job::GetProxyDone(int error) {
@@ -180,17 +112,5 @@ void MojoProxyResolverImpl::Job::GetProxyDone(int error) {
 void MojoProxyResolverImpl::Job::OnConnectionError() {
   resolver_->DeleteJob(this);
 }
-
-void MojoProxyResolverImpl::Job::SendLoadStateChanged(LoadState load_state) {
-  client_->LoadStateChanged(load_state);
-}
-
-MojoProxyResolverImpl::SetPacScriptRequest::SetPacScriptRequest(
-    const scoped_refptr<ProxyResolverScriptData>& script_data,
-    const mojo::Callback<void(int32_t)>& callback)
-    : script_data(script_data), callback(callback) {
-}
-
-MojoProxyResolverImpl::SetPacScriptRequest::~SetPacScriptRequest() = default;
 
 }  // namespace net

@@ -58,12 +58,6 @@ TEST_F(QuicConfigTest, ToHandshakeMessage) {
   error = msg.GetUint32(kSRBF, &value);
   EXPECT_EQ(QUIC_NO_ERROR, error);
   EXPECT_EQ(kDefaultSocketReceiveBuffer, value);
-
-  const QuicTag* out;
-  size_t out_len;
-  error = msg.GetTaglist(kCGST, &out, &out_len);
-  EXPECT_EQ(1u, out_len);
-  EXPECT_EQ(kQBIC, *out);
 }
 
 TEST_F(QuicConfigTest, ProcessClientHello) {
@@ -89,8 +83,18 @@ TEST_F(QuicConfigTest, ProcessClientHello) {
   client_config.ToHandshakeMessage(&msg);
 
   string error_details;
+  QuicTagVector initial_received_options;
+  initial_received_options.push_back(kIW50);
+  EXPECT_TRUE(
+      config_.SetInitialReceivedConnectionOptions(initial_received_options));
+  EXPECT_FALSE(
+      config_.SetInitialReceivedConnectionOptions(initial_received_options))
+      << "You can only set initial options once.";
   const QuicErrorCode error =
       config_.ProcessPeerHello(msg, CLIENT, &error_details);
+  EXPECT_FALSE(
+      config_.SetInitialReceivedConnectionOptions(initial_received_options))
+      << "You cannot set initial options after the hello.";
   EXPECT_EQ(QUIC_NO_ERROR, error);
   EXPECT_TRUE(config_.negotiated());
   EXPECT_EQ(QuicTime::Delta::FromSeconds(kMaximumIdleTimeoutSecs),
@@ -99,9 +103,10 @@ TEST_F(QuicConfigTest, ProcessClientHello) {
             config_.MaxStreamsPerConnection());
   EXPECT_EQ(10 * kNumMicrosPerMilli, config_.ReceivedInitialRoundTripTimeUs());
   EXPECT_TRUE(config_.HasReceivedConnectionOptions());
-  EXPECT_EQ(2u, config_.ReceivedConnectionOptions().size());
-  EXPECT_EQ(config_.ReceivedConnectionOptions()[0], kTBBR);
-  EXPECT_EQ(config_.ReceivedConnectionOptions()[1], kFHDR);
+  EXPECT_EQ(3u, config_.ReceivedConnectionOptions().size());
+  EXPECT_EQ(config_.ReceivedConnectionOptions()[0], kIW50);
+  EXPECT_EQ(config_.ReceivedConnectionOptions()[1], kTBBR);
+  EXPECT_EQ(config_.ReceivedConnectionOptions()[2], kFHDR);
   EXPECT_EQ(config_.ReceivedInitialStreamFlowControlWindowBytes(),
             2 * kInitialStreamFlowControlWindowForTest);
   EXPECT_EQ(config_.ReceivedInitialSessionFlowControlWindowBytes(),
@@ -149,11 +154,9 @@ TEST_F(QuicConfigTest, ProcessServerHello) {
 TEST_F(QuicConfigTest, MissingOptionalValuesInCHLO) {
   CryptoHandshakeMessage msg;
   msg.SetValue(kICSL, 1);
-  msg.SetVector(kCGST, QuicTagVector(1, kQBIC));
 
   // Set all REQUIRED tags.
   msg.SetValue(kICSL, 1);
-  msg.SetVector(kCGST, QuicTagVector(1, kQBIC));
   msg.SetValue(kMSPC, 1);
 
   // No error, as rest are optional.
@@ -169,7 +172,6 @@ TEST_F(QuicConfigTest, MissingOptionalValuesInSHLO) {
 
   // Set all REQUIRED tags.
   msg.SetValue(kICSL, 1);
-  msg.SetVector(kCGST, QuicTagVector(1, kQBIC));
   msg.SetValue(kMSPC, 1);
 
   // No error, as rest are optional.
@@ -183,7 +185,6 @@ TEST_F(QuicConfigTest, MissingOptionalValuesInSHLO) {
 TEST_F(QuicConfigTest, MissingValueInCHLO) {
   CryptoHandshakeMessage msg;
   msg.SetValue(kICSL, 1);
-  msg.SetVector(kCGST, QuicTagVector(1, kQBIC));
   // Missing kMSPC. KATO is optional.
   string error_details;
   const QuicErrorCode error =
@@ -225,6 +226,34 @@ TEST_F(QuicConfigTest, InvalidFlowControlWindow) {
 
   EXPECT_EQ(kMinimumFlowControlSendWindow,
             config.GetInitialStreamFlowControlWindowToSend());
+}
+
+TEST_F(QuicConfigTest, HasClientSentConnectionOption) {
+  QuicConfig client_config;
+  QuicTagVector copt;
+  copt.push_back(kTBBR);
+  copt.push_back(kFHDR);
+  client_config.SetConnectionOptionsToSend(copt);
+  EXPECT_TRUE(client_config.HasClientSentConnectionOption(
+      kTBBR, Perspective::IS_CLIENT));
+  EXPECT_TRUE(client_config.HasClientSentConnectionOption(
+      kFHDR, Perspective::IS_CLIENT));
+
+  CryptoHandshakeMessage msg;
+  client_config.ToHandshakeMessage(&msg);
+
+  string error_details;
+  const QuicErrorCode error =
+      config_.ProcessPeerHello(msg, CLIENT, &error_details);
+  EXPECT_EQ(QUIC_NO_ERROR, error);
+  EXPECT_TRUE(config_.negotiated());
+
+  EXPECT_TRUE(config_.HasReceivedConnectionOptions());
+  EXPECT_EQ(2u, config_.ReceivedConnectionOptions().size());
+  EXPECT_TRUE(
+      config_.HasClientSentConnectionOption(kTBBR, Perspective::IS_SERVER));
+  EXPECT_TRUE(
+      config_.HasClientSentConnectionOption(kFHDR, Perspective::IS_SERVER));
 }
 
 }  // namespace

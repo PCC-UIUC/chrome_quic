@@ -6,7 +6,9 @@
 
 #include "base/callback_helpers.h"
 #include "base/logging.h"
+#include "base/metrics/histogram_macros.h"
 #include "base/profiler/scoped_tracker.h"
+#include "base/time/time.h"
 #include "net/base/io_buffer.h"
 #include "net/base/ip_endpoint.h"
 #include "net/base/net_errors.h"
@@ -38,6 +40,7 @@ TCPClientSocket::TCPClientSocket(scoped_ptr<TCPSocket> connected_socket,
 }
 
 TCPClientSocket::~TCPClientSocket() {
+  Disconnect();
 }
 
 int TCPClientSocket::Bind(const IPEndPoint& address) {
@@ -124,6 +127,7 @@ int TCPClientSocket::DoConnect() {
 
     if (previously_disconnected_) {
       use_history_.Reset();
+      connection_attempts_.clear();
       previously_disconnected_ = false;
     }
 
@@ -159,6 +163,9 @@ int TCPClientSocket::DoConnectComplete(int result) {
     return OK;  // Done!
   }
 
+  connection_attempts_.push_back(
+      ConnectionAttempt(addresses_[current_address_index_], result));
+
   // Close whatever partially connected socket we currently have.
   DoDisconnect();
 
@@ -180,6 +187,7 @@ void TCPClientSocket::Disconnect() {
 }
 
 void TCPClientSocket::DoDisconnect() {
+  EmitTCPMetricsHistogramsOnDisconnect();
   // If connecting or already connected, record that the socket has been
   // disconnected.
   previously_disconnected_ = socket_->IsValid() && current_address_index_ >= 0;
@@ -296,6 +304,20 @@ bool TCPClientSocket::SetNoDelay(bool no_delay) {
   return socket_->SetNoDelay(no_delay);
 }
 
+void TCPClientSocket::GetConnectionAttempts(ConnectionAttempts* out) const {
+  *out = connection_attempts_;
+}
+
+void TCPClientSocket::ClearConnectionAttempts() {
+  connection_attempts_.clear();
+}
+
+void TCPClientSocket::AddConnectionAttempts(
+    const ConnectionAttempts& attempts) {
+  connection_attempts_.insert(connection_attempts_.begin(), attempts.begin(),
+                              attempts.end());
+}
+
 void TCPClientSocket::DidCompleteConnect(int result) {
   DCHECK_EQ(next_connect_state_, CONNECT_STATE_CONNECT_COMPLETE);
   DCHECK_NE(result, ERR_IO_PENDING);
@@ -330,6 +352,15 @@ int TCPClientSocket::OpenSocket(AddressFamily family) {
   socket_->SetDefaultOptionsForClient();
 
   return OK;
+}
+
+void TCPClientSocket::EmitTCPMetricsHistogramsOnDisconnect() {
+  base::TimeDelta rtt;
+  if (socket_->GetEstimatedRoundTripTime(&rtt)) {
+    UMA_HISTOGRAM_CUSTOM_TIMES("Net.TcpRtt.AtDisconnect", rtt,
+                               base::TimeDelta::FromMilliseconds(1),
+                               base::TimeDelta::FromMinutes(10), 100);
+  }
 }
 
 }  // namespace net

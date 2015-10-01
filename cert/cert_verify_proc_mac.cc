@@ -476,9 +476,16 @@ bool CertVerifyProcMac::SupportsAdditionalTrustAnchors() const {
   return false;
 }
 
+bool CertVerifyProcMac::SupportsOCSPStapling() const {
+  // TODO(rsleevi): Plumb an OCSP response into the Mac system library.
+  // https://crbug.com/430714
+  return false;
+}
+
 int CertVerifyProcMac::VerifyInternal(
     X509Certificate* cert,
     const std::string& hostname,
+    const std::string& ocsp_response,
     int flags,
     CRLSet* crl_set,
     const CertificateList& additional_trust_anchors,
@@ -671,7 +678,7 @@ int CertVerifyProcMac::VerifyInternal(
                           ", chain_info[" << index << "].StatusBits is "
                        << chain_info[index].StatusBits;
         }
-        for (uint32 status_code_index = 0;
+        for (uint32_t status_code_index = 0;
              status_code_index < chain_info[index].NumStatusCodes;
              ++status_code_index) {
           // As of OS X 10.9, attempting to verify a certificate chain that

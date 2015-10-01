@@ -10,7 +10,7 @@
 #include "net/quic/crypto/aes_128_gcm_12_encrypter.h"
 #include "net/quic/quic_flags.h"
 #include "net/quic/test_tools/crypto_test_utils.h"
-#include "net/quic/test_tools/quic_session_peer.h"
+#include "net/quic/test_tools/quic_spdy_session_peer.h"
 #include "net/quic/test_tools/quic_test_utils.h"
 #include "net/tools/quic/quic_spdy_client_stream.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -21,11 +21,12 @@ using net::test::CryptoTestUtils;
 using net::test::DefaultQuicConfig;
 using net::test::MockConnection;
 using net::test::PacketSavingConnection;
-using net::test::QuicSessionPeer;
+using net::test::QuicSpdySessionPeer;
 using net::test::SupportedVersions;
 using net::test::TestPeerIPAddress;
 using net::test::ValueRestore;
 using net::test::kTestPort;
+using testing::AnyNumber;
 using testing::Invoke;
 using testing::Truly;
 using testing::_;
@@ -44,10 +45,11 @@ class ToolsQuicClientSessionTest
   ToolsQuicClientSessionTest()
       : connection_(new PacketSavingConnection(Perspective::IS_CLIENT,
                                                SupportedVersions(GetParam()))) {
-    session_.reset(new QuicClientSession(DefaultQuicConfig(), connection_));
-    session_->InitializeSession(
+    session_.reset(new QuicClientSession(
+        DefaultQuicConfig(), connection_,
         QuicServerId(kServerHostname, kPort, false, PRIVACY_MODE_DISABLED),
-        &crypto_config_);
+        &crypto_config_));
+    session_->Initialize();
     // Advance the time, because timers do not like uninitialized times.
     connection_->AdvanceTime(QuicTime::Delta::FromSeconds(1));
   }
@@ -71,18 +73,20 @@ TEST_P(ToolsQuicClientSessionTest, CryptoConnect) {
 }
 
 TEST_P(ToolsQuicClientSessionTest, MaxNumStreams) {
+  EXPECT_CALL(*connection_, SendRstStream(_, _, _)).Times(AnyNumber());
+
   session_->config()->SetMaxStreamsPerConnection(1, 1);
 
   // Initialize crypto before the client session will create a stream.
   CompleteCryptoHandshake();
 
-  QuicSpdyClientStream* stream = session_->CreateOutgoingDataStream();
+  QuicSpdyClientStream* stream = session_->CreateOutgoingDynamicStream();
   ASSERT_TRUE(stream);
-  EXPECT_FALSE(session_->CreateOutgoingDataStream());
+  EXPECT_FALSE(session_->CreateOutgoingDynamicStream());
 
   // Close a stream and ensure I can now open a new one.
   session_->CloseStream(stream->id());
-  stream = session_->CreateOutgoingDataStream();
+  stream = session_->CreateOutgoingDynamicStream();
   EXPECT_TRUE(stream);
 }
 
@@ -91,8 +95,9 @@ TEST_P(ToolsQuicClientSessionTest, GoAwayReceived) {
 
   // After receiving a GoAway, I should no longer be able to create outgoing
   // streams.
-  session_->OnGoAway(QuicGoAwayFrame(QUIC_PEER_GOING_AWAY, 1u, "Going away."));
-  EXPECT_EQ(nullptr, session_->CreateOutgoingDataStream());
+  session_->connection()->OnGoAwayFrame(
+      QuicGoAwayFrame(QUIC_PEER_GOING_AWAY, 1u, "Going away."));
+  EXPECT_EQ(nullptr, session_->CreateOutgoingDynamicStream());
 }
 
 TEST_P(ToolsQuicClientSessionTest, SetFecProtectionFromConfig) {
@@ -108,9 +113,9 @@ TEST_P(ToolsQuicClientSessionTest, SetFecProtectionFromConfig) {
 
   // Verify that headers stream is always protected and data streams are
   // optionally protected.
-  EXPECT_EQ(FEC_PROTECT_ALWAYS,
-            QuicSessionPeer::GetHeadersStream(session_.get())->fec_policy());
-  QuicSpdyClientStream* stream = session_->CreateOutgoingDataStream();
+  EXPECT_EQ(FEC_PROTECT_ALWAYS, QuicSpdySessionPeer::GetHeadersStream(
+                                    session_.get())->fec_policy());
+  QuicSpdyClientStream* stream = session_->CreateOutgoingDynamicStream();
   ASSERT_TRUE(stream);
   EXPECT_EQ(FEC_PROTECT_OPTIONAL, stream->fec_policy());
 }
@@ -124,10 +129,11 @@ TEST_P(ToolsQuicClientSessionTest, InvalidPacketReceived) {
   IPEndPoint server_address(TestPeerIPAddress(), kTestPort);
   IPEndPoint client_address(TestPeerIPAddress(), kTestPort);
 
-  EXPECT_CALL(*implicit_cast<MockConnection*>(connection_),
-              ProcessUdpPacket(server_address, client_address, _))
-      .WillRepeatedly(Invoke(implicit_cast<MockConnection*>(connection_),
+  EXPECT_CALL(*connection_, ProcessUdpPacket(server_address, client_address, _))
+      .WillRepeatedly(Invoke(static_cast<MockConnection*>(connection_),
                              &MockConnection::ReallyProcessUdpPacket));
+  EXPECT_CALL(*connection_, OnCanWrite()).Times(AnyNumber());
+  EXPECT_CALL(*connection_, OnError(_)).Times(1);
 
   // Verify that empty packets don't close the connection.
   QuicEncryptedPacket zero_length_packet(nullptr, 0, false);
@@ -150,8 +156,7 @@ TEST_P(ToolsQuicClientSessionTest, InvalidPacketReceived) {
   // Change the last byte of the encrypted data.
   *(const_cast<char*>(packet->data() + packet->length() - 1)) += 1;
   EXPECT_CALL(*connection_, SendConnectionCloseWithDetails(_, _)).Times(0);
-  EXPECT_CALL(*implicit_cast<MockConnection*>(connection_),
-              OnError(Truly(CheckForDecryptionError))).Times(1);
+  EXPECT_CALL(*connection_, OnError(Truly(CheckForDecryptionError))).Times(1);
   session_->connection()->ProcessUdpPacket(client_address, server_address,
                                            *packet);
 }
@@ -161,16 +166,16 @@ TEST_P(ToolsQuicClientSessionTest, InvalidFramedPacketReceived) {
   IPEndPoint server_address(TestPeerIPAddress(), kTestPort);
   IPEndPoint client_address(TestPeerIPAddress(), kTestPort);
 
-  EXPECT_CALL(*implicit_cast<MockConnection*>(connection_),
-              ProcessUdpPacket(server_address, client_address, _))
-      .WillRepeatedly(Invoke(implicit_cast<MockConnection*>(connection_),
+  EXPECT_CALL(*connection_, ProcessUdpPacket(server_address, client_address, _))
+      .WillRepeatedly(Invoke(static_cast<MockConnection*>(connection_),
                              &MockConnection::ReallyProcessUdpPacket));
+  EXPECT_CALL(*connection_, OnError(_)).Times(1);
 
   // Verify that a decryptable packet with bad frames does close the connection.
   QuicConnectionId connection_id = session_->connection()->connection_id();
   scoped_ptr<QuicEncryptedPacket> packet(ConstructMisFramedEncryptedPacket(
       connection_id, false, false, 100, "data", PACKET_8BYTE_CONNECTION_ID,
-      PACKET_6BYTE_SEQUENCE_NUMBER, nullptr));
+      PACKET_6BYTE_PACKET_NUMBER, nullptr));
   EXPECT_CALL(*connection_, SendConnectionCloseWithDetails(_, _)).Times(1);
   session_->connection()->ProcessUdpPacket(client_address, server_address,
                                            *packet);

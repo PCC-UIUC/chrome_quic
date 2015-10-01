@@ -17,7 +17,6 @@
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace net {
-
 namespace test {
 
 std::string HexDumpWithMarks(const unsigned char* data, int length,
@@ -49,8 +48,9 @@ std::string HexDumpWithMarks(const unsigned char* data, int length,
     }
     hex = hex + "  ";
 
-    for (const unsigned char *p = row; p < row + 4 && p < row + length; ++p)
+    for (const unsigned char* p = row; p < row + 4 && p < row + length; ++p) {
       hex += (*p >= 0x20 && *p <= 0x7f) ? (*p) : '.';
+    }
 
     hex = hex + '\n';
   }
@@ -94,7 +94,7 @@ void SetFrameFlags(SpdyFrame* frame,
   switch (spdy_version) {
     case SPDY2:
     case SPDY3:
-    case SPDY4:
+    case HTTP2:
       frame->data()[4] = flags;
       break;
     default:
@@ -116,7 +116,7 @@ void SetFrameLength(SpdyFrame* frame,
         memcpy(frame->data() + 5, reinterpret_cast<char*>(&wire_length) + 1, 3);
       }
       break;
-    case SPDY4:
+    case HTTP2:
       CHECK_GT(1u<<14, length);
       {
         int32 wire_length = base::HostToNet32(length);
@@ -128,6 +128,11 @@ void SetFrameLength(SpdyFrame* frame,
     default:
       LOG(FATAL) << "Unsupported SPDY version.";
   }
+}
+
+bool CompareSpdyHeaderBlocks(const SpdyHeaderBlock& a,
+                             const SpdyHeaderBlock& b) {
+  return a.size() == b.size() && std::equal(a.begin(), a.end(), b.begin());
 }
 
 std::string a2b_hex(const char* hex_data) {
@@ -169,5 +174,4 @@ void AddPin(TransportSecurityState* state,
 }
 
 }  // namespace test
-
 }  // namespace net

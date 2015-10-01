@@ -4,12 +4,16 @@
 
 #include "net/disk_cache/blockfile/sparse_control.h"
 
+#include <stdint.h>
+
 #include "base/bind.h"
 #include "base/format_macros.h"
+#include "base/location.h"
 #include "base/logging.h"
-#include "base/message_loop/message_loop.h"
+#include "base/single_thread_task_runner.h"
 #include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
+#include "base/thread_task_runner_handle.h"
 #include "base/time/time.h"
 #include "net/base/io_buffer.h"
 #include "net/base/net_errors.h"
@@ -136,7 +140,7 @@ void ChildrenDeleter::DeleteChildren() {
   children_map_.Set(child_id, false);
 
   // Post a task to delete the next child.
-  base::MessageLoop::current()->PostTask(
+  base::ThreadTaskRunnerHandle::Get()->PostTask(
       FROM_HERE, base::Bind(&ChildrenDeleter::DeleteChildren, this));
 }
 
@@ -161,7 +165,7 @@ net::NetLog::EventType GetSparseEventType(
 void LogChildOperationEnd(const net::BoundNetLog& net_log,
                           disk_cache::SparseControl::SparseOperation operation,
                           int result) {
-  if (net_log.GetCaptureMode().enabled()) {
+  if (net_log.IsCapturing()) {
     net::NetLog::EventType event_type;
     switch (operation) {
       case disk_cache::SparseControl::kReadOperation:
@@ -253,7 +257,7 @@ int SparseControl::StartIO(SparseOperation op, int64 offset, net::IOBuffer* buf,
 
   // We only support up to 64 GB.
   if (static_cast<uint64>(offset) + static_cast<unsigned int>(buf_len) >=
-      GG_UINT64_C(0x1000000000)) {
+      UINT64_C(0x1000000000)) {
     return net::ERR_CACHE_OPERATION_NOT_SUPPORTED;
   }
 
@@ -275,7 +279,7 @@ int SparseControl::StartIO(SparseOperation op, int64 offset, net::IOBuffer* buf,
   finished_ = false;
   abort_ = false;
 
-  if (entry_->net_log().GetCaptureMode().enabled()) {
+  if (entry_->net_log().IsCapturing()) {
     entry_->net_log().BeginEvent(
         GetSparseEventType(operation_),
         CreateNetLogSparseOperationCallback(offset_, buf_len_));
@@ -359,11 +363,11 @@ void SparseControl::DeleteChildren(EntryImpl* entry) {
   deleter->AddRef();
 
   if (buffer) {
-    base::MessageLoop::current()->PostTask(
+    base::ThreadTaskRunnerHandle::Get()->PostTask(
         FROM_HERE,
         base::Bind(&ChildrenDeleter::Start, deleter, buffer, data_len));
   } else {
-    base::MessageLoop::current()->PostTask(
+    base::ThreadTaskRunnerHandle::Get()->PostTask(
         FROM_HERE,
         base::Bind(&ChildrenDeleter::ReadData, deleter, address, data_len));
   }
@@ -678,15 +682,13 @@ void SparseControl::DoChildrenIO() {
 
   // Range operations are finished synchronously, often without setting
   // |finished_| to true.
-  if (kGetRangeOperation == operation_ &&
-      entry_->net_log().GetCaptureMode().enabled()) {
+  if (kGetRangeOperation == operation_ && entry_->net_log().IsCapturing()) {
     entry_->net_log().EndEvent(
         net::NetLog::TYPE_SPARSE_GET_RANGE,
         CreateNetLogGetAvailableRangeResultCallback(offset_, result_));
   }
   if (finished_) {
-    if (kGetRangeOperation != operation_ &&
-        entry_->net_log().GetCaptureMode().enabled()) {
+    if (kGetRangeOperation != operation_ && entry_->net_log().IsCapturing()) {
       entry_->net_log().EndEvent(GetSparseEventType(operation_));
     }
     if (pending_)
@@ -716,7 +718,7 @@ bool SparseControl::DoChildIO() {
   int rv = 0;
   switch (operation_) {
     case kReadOperation:
-      if (entry_->net_log().GetCaptureMode().enabled()) {
+      if (entry_->net_log().IsCapturing()) {
         entry_->net_log().BeginEvent(
             net::NetLog::TYPE_SPARSE_READ_CHILD_DATA,
             CreateNetLogSparseReadWriteCallback(child_->net_log().source(),
@@ -726,7 +728,7 @@ bool SparseControl::DoChildIO() {
                                 child_len_, callback);
       break;
     case kWriteOperation:
-      if (entry_->net_log().GetCaptureMode().enabled()) {
+      if (entry_->net_log().IsCapturing()) {
         entry_->net_log().BeginEvent(
             net::NetLog::TYPE_SPARSE_WRITE_CHILD_DATA,
             CreateNetLogSparseReadWriteCallback(child_->net_log().source(),
@@ -856,7 +858,7 @@ void SparseControl::OnChildIOCompleted(int result) {
     // We'll return the current result of the operation, which may be less than
     // the bytes to read or write, but the user cancelled the operation.
     abort_ = false;
-    if (entry_->net_log().GetCaptureMode().enabled()) {
+    if (entry_->net_log().IsCapturing()) {
       entry_->net_log().AddEvent(net::NetLog::TYPE_CANCELLED);
       entry_->net_log().EndEvent(GetSparseEventType(operation_));
     }

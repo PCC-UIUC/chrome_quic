@@ -6,7 +6,6 @@
 
 #include "base/bind.h"
 #include "base/bind_helpers.h"
-#include "base/profiler/scoped_tracker.h"
 #include "base/time/time.h"
 #include "base/values.h"
 #include "net/base/net_errors.h"
@@ -77,9 +76,6 @@ LoadState SOCKSConnectJob::GetLoadState() const {
 }
 
 void SOCKSConnectJob::OnIOComplete(int result) {
-  // TODO(pkasting): Remove ScopedTracker below once crbug.com/455884 is fixed.
-  tracked_objects::ScopedTracker tracking_profile(
-      FROM_HERE_WITH_EXPLICIT_FUNCTION("455884 SOCKSConnectJob::OnIOComplete"));
   int rv = DoLoop(result);
   if (rv != ERR_IO_PENDING)
     NotifyDelegateOfCompletion(rv);  // Deletes |this|
@@ -270,19 +266,19 @@ LoadState SOCKSClientSocketPool::GetLoadState(
   return base_.GetLoadState(group_name, handle);
 }
 
-base::DictionaryValue* SOCKSClientSocketPool::GetInfoAsValue(
+scoped_ptr<base::DictionaryValue> SOCKSClientSocketPool::GetInfoAsValue(
     const std::string& name,
     const std::string& type,
     bool include_nested_pools) const {
-  base::DictionaryValue* dict = base_.GetInfoAsValue(name, type);
+  scoped_ptr<base::DictionaryValue> dict(base_.GetInfoAsValue(name, type));
   if (include_nested_pools) {
-    base::ListValue* list = new base::ListValue();
+    scoped_ptr<base::ListValue> list(new base::ListValue());
     list->Append(transport_pool_->GetInfoAsValue("transport_socket_pool",
                                                  "transport_socket_pool",
                                                  false));
-    dict->Set("nested_pools", list);
+    dict->Set("nested_pools", list.Pass());
   }
-  return dict;
+  return dict.Pass();
 }
 
 base::TimeDelta SOCKSClientSocketPool::ConnectionTimeout() const {

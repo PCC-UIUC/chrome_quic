@@ -14,9 +14,11 @@
 #include "base/files/file_util.h"
 #include "base/hash.h"
 #include "base/location.h"
+#include "base/metrics/histogram_macros.h"
 #include "base/numerics/safe_conversions.h"
 #include "base/sha1.h"
 #include "base/strings/stringprintf.h"
+#include "base/timer/elapsed_timer.h"
 #include "net/base/io_buffer.h"
 #include "net/base/net_errors.h"
 #include "net/disk_cache/simple/simple_backend_version.h"
@@ -216,6 +218,7 @@ void SimpleSynchronousEntry::OpenEntry(
     const uint64 entry_hash,
     bool had_index,
     SimpleEntryCreationResults *out_results) {
+  base::ElapsedTimer open_time;
   SimpleSynchronousEntry* sync_entry =
       new SimpleSynchronousEntry(cache_type, path, "", entry_hash);
   out_results->result =
@@ -230,6 +233,7 @@ void SimpleSynchronousEntry::OpenEntry(
     out_results->stream_0_data = NULL;
     return;
   }
+  UMA_HISTOGRAM_TIMES("SimpleCache.DiskOpenLatency", open_time.Elapsed());
   out_results->sync_entry = sync_entry;
 }
 
@@ -935,7 +939,7 @@ int SimpleSynchronousEntry::InitializeForOpen(
     scoped_ptr<char[]> key(new char[header.key_length]);
     int key_read_result = files_[i].Read(sizeof(header), key.get(),
                                          header.key_length);
-    if (key_read_result != implicit_cast<int>(header.key_length)) {
+    if (key_read_result != base::checked_cast<int>(header.key_length)) {
       DLOG(WARNING) << "Cannot read key from entry.";
       RecordSyncOpenResult(cache_type_, OPEN_ENTRY_CANT_READ_KEY, had_index);
       return net::ERR_FAILED;
@@ -1014,7 +1018,7 @@ bool SimpleSynchronousEntry::InitializeCreatedFile(
 
   bytes_written = files_[file_index].Write(sizeof(header), key_.data(),
                                            key_.size());
-  if (bytes_written != implicit_cast<int>(key_.size())) {
+  if (bytes_written != base::checked_cast<int>(key_.size())) {
     *out_result = CREATE_ENTRY_CANT_WRITE_KEY;
     return false;
   }
@@ -1244,7 +1248,7 @@ bool SimpleSynchronousEntry::InitializeSparseFile() {
 
   int key_write_result = sparse_file_.Write(sizeof(header), key_.data(),
                                             key_.size());
-  if (key_write_result != implicit_cast<int>(key_.size())) {
+  if (key_write_result != base::checked_cast<int>(key_.size())) {
     DLOG(WARNING) << "Could not write sparse file key";
     return false;
   }
@@ -1374,7 +1378,7 @@ bool SimpleSynchronousEntry::WriteSparseRange(SparseRange* range,
     int bytes_written = sparse_file_.Write(range->file_offset - sizeof(header),
                                            reinterpret_cast<char*>(&header),
                                            sizeof(header));
-    if (bytes_written != implicit_cast<int>(sizeof(header))) {
+    if (bytes_written != base::checked_cast<int>(sizeof(header))) {
       DLOG(WARNING) << "Could not rewrite sparse range header.";
       return false;
     }
@@ -1409,7 +1413,7 @@ bool SimpleSynchronousEntry::AppendSparseRange(int64 offset,
   int bytes_written = sparse_file_.Write(sparse_tail_offset_,
                                          reinterpret_cast<char*>(&header),
                                          sizeof(header));
-  if (bytes_written != implicit_cast<int>(sizeof(header))) {
+  if (bytes_written != base::checked_cast<int>(sizeof(header))) {
     DLOG(WARNING) << "Could not append sparse range header.";
     return false;
   }

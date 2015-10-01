@@ -6,7 +6,6 @@
 
 #include "net/quic/congestion_control/tcp_cubic_bytes_sender.h"
 #include "net/quic/congestion_control/tcp_cubic_sender.h"
-#include "net/quic/quic_flags.h"
 #include "net/quic/quic_protocol.h"
 
 namespace net {
@@ -21,10 +20,8 @@ SendAlgorithmInterface* SendAlgorithmInterface::Create(
     QuicConnectionStats* stats,
     QuicPacketCount initial_congestion_window) {
   const QuicPacketCount max_congestion_window =
-      FLAGS_quic_limit_max_cwnd_to_receive_buffer
-          ? (kDefaultSocketReceiveBuffer * kUsableRecieveBufferFraction) /
-                kDefaultTCPMSS
-          : kMaxTcpCongestionWindow;
+      (kDefaultSocketReceiveBuffer * kConservativeReceiveBufferFraction) /
+      kDefaultTCPMSS;
   switch (congestion_control_type) {
     case kCubic:
       return new TcpCubicSender(clock, rtt_stats, false /* don't use Reno */,

@@ -115,6 +115,13 @@ static const base::FilePath::CharType* kUnsafePortableBasenames[] = {
 #endif
 };
 
+static const base::FilePath::CharType* kUnsafePortableBasenamesForWindows[] = {
+    FILE_PATH_LITERAL("con"),
+    FILE_PATH_LITERAL("con.zip"),
+    FILE_PATH_LITERAL("NUL"),
+    FILE_PATH_LITERAL("NUL.zip"),
+};
+
 static const base::FilePath::CharType* kSafePortableRelativePaths[] = {
     FILE_PATH_LITERAL("a/a"),
 #if defined(OS_WIN)
@@ -594,14 +601,15 @@ TEST(FilenameUtilTest, GenerateFileName) {
      "",
      L"",
      L"caf\u03b5.png"},
-    {__LINE__,
+    {// Invalid C-D header. Name value is skipped now.
+     __LINE__,
      "http://www.example.com/file?id=3",
      "attachment; name=\xcf\xc2\xd4\xd8.zip",
      "GBK",
      "",
      "",
      L"",
-     L"\u4e0b\u8f7d.zip"},
+     L"file"},
     {// Invalid C-D header. Extracts filename from url.
      __LINE__,
      "http://www.google.com/test.html",
@@ -732,7 +740,7 @@ TEST(FilenameUtilTest, GenerateFileName) {
      "image/jpeg",
      L"download",
      L"\uc608\uc220 \uc608\uc220.jpg"},
-    {// name= parameter
+    {// Invalid C-D header. Name value is skipped now.
      __LINE__,
      "http://www.examples.com/q.cgi?id=abc",
      "attachment; name=abc de.pdf",
@@ -740,7 +748,7 @@ TEST(FilenameUtilTest, GenerateFileName) {
      "",
      "application/octet-stream",
      L"download",
-     L"abc de.pdf"},
+     L"q.cgi"},
     {__LINE__,
      "http://www.example.com/path",
      "filename=\"=?EUC-JP?Q?=B7=DD=BD=D13=2Epng?=\"",
@@ -1405,6 +1413,20 @@ TEST(FilenameUtilTest, GenerateFileName) {
     GenerateFilenameCase test_case = generation_tests[i];
     test_case.referrer_charset = "GBK";
     RunGenerateFileNameTestCase(&test_case);
+  }
+}
+
+TEST(FilenameUtilTest, IsReservedNameOnWindows) {
+  for (size_t i = 0; i < arraysize(kSafePortableBasenames); ++i) {
+    EXPECT_FALSE(IsReservedNameOnWindows(
+        base::FilePath(kSafePortableBasenames[i]).value()))
+        << kSafePortableBasenames[i];
+  }
+
+  for (size_t i = 0; i < arraysize(kUnsafePortableBasenamesForWindows); ++i) {
+    EXPECT_TRUE(IsReservedNameOnWindows(
+        base::FilePath(kUnsafePortableBasenamesForWindows[i]).value()))
+        << kUnsafePortableBasenamesForWindows[i];
   }
 }
 

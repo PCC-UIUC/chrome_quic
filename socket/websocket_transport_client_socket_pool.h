@@ -100,7 +100,7 @@ class NET_EXPORT_PRIVATE WebSocketTransportConnectJob : public ConnectJob {
   scoped_ptr<WebSocketTransportConnectSubJob> ipv4_job_;
   scoped_ptr<WebSocketTransportConnectSubJob> ipv6_job_;
 
-  base::OneShotTimer<WebSocketTransportConnectJob> fallback_timer_;
+  base::OneShotTimer fallback_timer_;
   TransportConnectJobHelper::ConnectionLatencyHistogram race_result_;
   ClientSocketHandle* const handle_;
   CompletionCallback callback_;
@@ -152,7 +152,7 @@ class NET_EXPORT_PRIVATE WebSocketTransportClientSocketPool
   int IdleSocketCountInGroup(const std::string& group_name) const override;
   LoadState GetLoadState(const std::string& group_name,
                          const ClientSocketHandle* handle) const override;
-  base::DictionaryValue* GetInfoAsValue(
+  scoped_ptr<base::DictionaryValue> GetInfoAsValue(
       const std::string& name,
       const std::string& type,
       bool include_nested_pools) const override;

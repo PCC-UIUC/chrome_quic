@@ -15,6 +15,7 @@
 #include "net/base/completion_callback.h"
 #include "net/base/io_buffer.h"
 #include "net/base/net_errors.h"
+#include "net/websockets/websocket_deflate_parameters.h"
 #include "net/websockets/websocket_deflate_predictor.h"
 #include "net/websockets/websocket_deflater.h"
 #include "net/websockets/websocket_errors.h"
@@ -35,11 +36,10 @@ const size_t kChunkSize = 4 * 1024;
 
 WebSocketDeflateStream::WebSocketDeflateStream(
     scoped_ptr<WebSocketStream> stream,
-    WebSocketDeflater::ContextTakeOverMode mode,
-    int client_window_bits,
+    const WebSocketDeflateParameters& params,
     scoped_ptr<WebSocketDeflatePredictor> predictor)
     : stream_(stream.Pass()),
-      deflater_(mode),
+      deflater_(params.client_context_take_over_mode()),
       inflater_(kChunkSize, kChunkSize),
       reading_state_(NOT_READING),
       writing_state_(NOT_WRITING),
@@ -47,9 +47,13 @@ WebSocketDeflateStream::WebSocketDeflateStream(
       current_writing_opcode_(WebSocketFrameHeader::kOpCodeText),
       predictor_(predictor.Pass()) {
   DCHECK(stream_);
-  DCHECK_GE(client_window_bits, 8);
-  DCHECK_LE(client_window_bits, 15);
-  deflater_.Initialize(client_window_bits);
+  DCHECK(params.IsValidAsResponse());
+  int client_max_window_bits = 15;
+  if (params.is_client_max_window_bits_specified()) {
+    DCHECK(params.has_client_max_window_bits_value());
+    client_max_window_bits = params.client_max_window_bits();
+  }
+  deflater_.Initialize(client_max_window_bits);
   inflater_.Initialize(kWindowBits);
 }
 
@@ -129,7 +133,7 @@ int WebSocketDeflateStream::Deflate(ScopedVector<WebSocketFrame>* frames) {
       if (frame->header.final)
         writing_state_ = NOT_WRITING;
       predictor_->RecordWrittenDataFrame(frame.get());
-      frames_to_write.push_back(frame.release());
+      frames_to_write.push_back(frame.Pass());
       current_writing_opcode_ = WebSocketFrameHeader::kOpCodeContinuation;
     } else {
       if (frame->data.get() &&
@@ -158,7 +162,7 @@ int WebSocketDeflateStream::Deflate(ScopedVector<WebSocketFrame>* frames) {
       } else {
         DCHECK_EQ(WRITING_POSSIBLY_COMPRESSED_MESSAGE, writing_state_);
         bool final = frame->header.final;
-        frames_of_message.push_back(frame.release());
+        frames_of_message.push_back(frame.Pass());
         if (final) {
           int result = AppendPossiblyCompressedMessage(&frames_of_message,
                                                        &frames_to_write);
@@ -220,7 +224,7 @@ int WebSocketDeflateStream::AppendCompressedFrame(
 
   current_writing_opcode_ = WebSocketFrameHeader::kOpCodeContinuation;
   predictor_->RecordWrittenDataFrame(compressed.get());
-  frames_to_write->push_back(compressed.release());
+  frames_to_write->push_back(compressed.Pass());
   return OK;
 }
 
@@ -270,7 +274,7 @@ int WebSocketDeflateStream::AppendPossiblyCompressedMessage(
   compressed->header.payload_length = compressed_payload->size();
 
   predictor_->RecordWrittenDataFrame(compressed.get());
-  frames_to_write->push_back(compressed.release());
+  frames_to_write->push_back(compressed.Pass());
   return OK;
 }
 
@@ -287,7 +291,7 @@ int WebSocketDeflateStream::Inflate(ScopedVector<WebSocketFrame>* frames) {
              << " payload_length=" << frame->header.payload_length;
 
     if (!WebSocketFrameHeader::IsKnownDataOpCode(frame->header.opcode)) {
-      frames_to_output.push_back(frame.release());
+      frames_to_output.push_back(frame.Pass());
       continue;
     }
 
@@ -309,7 +313,7 @@ int WebSocketDeflateStream::Inflate(ScopedVector<WebSocketFrame>* frames) {
       if (frame->header.final)
         reading_state_ = NOT_READING;
       current_reading_opcode_ = WebSocketFrameHeader::kOpCodeContinuation;
-      frames_to_output.push_back(frame.release());
+      frames_to_output.push_back(frame.Pass());
     } else {
       DCHECK_EQ(reading_state_, READING_COMPRESSED_MESSAGE);
       if (frame->data.get() &&
@@ -353,7 +357,7 @@ int WebSocketDeflateStream::Inflate(ScopedVector<WebSocketFrame>* frames) {
                  << " final=" << inflated->header.final
                  << " reserved1=" << inflated->header.reserved1
                  << " payload_length=" << inflated->header.payload_length;
-        frames_to_output.push_back(inflated.release());
+        frames_to_output.push_back(inflated.Pass());
         current_reading_opcode_ = WebSocketFrameHeader::kOpCodeContinuation;
         if (is_final)
           break;

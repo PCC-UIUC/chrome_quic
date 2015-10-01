@@ -19,6 +19,7 @@ import android.util.Log;
 
 import org.chromium.base.ApplicationState;
 import org.chromium.base.ApplicationStatus;
+import org.chromium.base.VisibleForTesting;
 
 /**
  * Used by the NetworkChangeNotifier to listens to platform changes in connectivity.
@@ -146,6 +147,7 @@ public class NetworkChangeNotifierAutoDetect extends BroadcastReceiver
     private ConnectivityManagerDelegate mConnectivityManagerDelegate;
     private WifiManagerDelegate mWifiManagerDelegate;
     private boolean mRegistered;
+    private final boolean mApplicationStateRegistered;
     private int mConnectionType;
     private String mWifiSSID;
     private double mMaxBandwidthMbps;
@@ -179,8 +181,11 @@ public class NetworkChangeNotifierAutoDetect extends BroadcastReceiver
 
         if (alwaysWatchForChanges) {
             registerReceiver();
+            mApplicationStateRegistered = false;
         } else {
             ApplicationStatus.registerApplicationStateListener(this);
+            onApplicationStateChange(getApplicationState());
+            mApplicationStateRegistered = true;
         }
     }
 
@@ -198,7 +203,25 @@ public class NetworkChangeNotifierAutoDetect extends BroadcastReceiver
         mWifiManagerDelegate = delegate;
     }
 
+    /**
+     * Returns the activity's status.
+     * @return an {@code int} that is one of {@code ApplicationState.HAS_*_ACTIVITIES}.
+     */
+    @VisibleForTesting
+    int getApplicationState() {
+        return ApplicationStatus.getStateForApplication();
+    }
+
+    /**
+     * Returns whether the object has registered to receive network connectivity intents.
+     */
+    @VisibleForTesting
+    boolean isReceiverRegisteredForTesting() {
+        return mRegistered;
+    }
+
     public void destroy() {
+        if (mApplicationStateRegistered) ApplicationStatus.unregisterApplicationStateListener(this);
         unregisterReceiver();
     }
 

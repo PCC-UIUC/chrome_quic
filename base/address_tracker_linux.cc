@@ -12,12 +12,27 @@
 #include "base/logging.h"
 #include "base/posix/eintr_wrapper.h"
 #include "base/threading/thread_restrictions.h"
-#include "net/base/net_util_linux.h"
+#include "net/base/network_interfaces_linux.h"
+#include "net/base/ip_address_number.h"
 
 namespace net {
 namespace internal {
 
 namespace {
+
+// Some kernel functions such as wireless_send_event and rtnetlink_ifinfo_prep
+// may send spurious messages over rtnetlink. RTM_NEWLINK messages where
+// ifi_change == 0 and rta_type == IFLA_WIRELESS should be ignored.
+bool IgnoreWirelessChange(const struct nlmsghdr* header,
+                          const struct ifinfomsg* msg) {
+  size_t length = IFLA_PAYLOAD(header);
+  for (const struct rtattr* attr = IFLA_RTA(msg); RTA_OK(attr, length);
+       attr = RTA_NEXT(attr, length)) {
+    if (attr->rta_type == IFLA_WIRELESS && msg->ifi_change == 0)
+      return true;
+  }
+  return false;
+}
 
 // Retrieves address from NETLINK address message.
 // Sets |really_deprecated| for IPv6 addresses with preferred lifetimes of 0.
@@ -107,14 +122,17 @@ AddressTrackerLinux::AddressTrackerLinux()
       tracking_(false) {
 }
 
-AddressTrackerLinux::AddressTrackerLinux(const base::Closure& address_callback,
-                                         const base::Closure& link_callback,
-                                         const base::Closure& tunnel_callback)
+AddressTrackerLinux::AddressTrackerLinux(
+    const base::Closure& address_callback,
+    const base::Closure& link_callback,
+    const base::Closure& tunnel_callback,
+    const base::hash_set<std::string>& ignored_interfaces)
     : get_interface_name_(GetInterfaceName),
       address_callback_(address_callback),
       link_callback_(link_callback),
       tunnel_callback_(tunnel_callback),
       netlink_fd_(-1),
+      ignored_interfaces_(ignored_interfaces),
       connection_type_initialized_(false),
       connection_type_initialized_cv_(&connection_type_lock_),
       current_connection_type_(NetworkChangeNotifier::CONNECTION_NONE),
@@ -235,6 +253,15 @@ base::hash_set<int> AddressTrackerLinux::GetOnlineLinks() const {
   return online_links_;
 }
 
+bool AddressTrackerLinux::IsInterfaceIgnored(int interface_index) const {
+  if (ignored_interfaces_.empty())
+    return false;
+
+  char buf[IFNAMSIZ] = {0};
+  const char* interface_name = get_interface_name_(interface_index, buf);
+  return ignored_interfaces_.find(interface_name) != ignored_interfaces_.end();
+}
+
 NetworkChangeNotifier::ConnectionType
 AddressTrackerLinux::GetCurrentConnectionType() {
   // http://crbug.com/125097
@@ -298,10 +325,12 @@ void AddressTrackerLinux::HandleMessage(char* buffer,
       case RTM_NEWADDR: {
         IPAddressNumber address;
         bool really_deprecated;
+        struct ifaddrmsg* msg =
+            reinterpret_cast<struct ifaddrmsg*>(NLMSG_DATA(header));
+        if (IsInterfaceIgnored(msg->ifa_index))
+          break;
         if (GetAddress(header, &address, &really_deprecated)) {
           AddressTrackerAutoLock lock(*this, address_map_lock_);
-          struct ifaddrmsg* msg =
-              reinterpret_cast<struct ifaddrmsg*>(NLMSG_DATA(header));
           // Routers may frequently (every few seconds) output the IPv6 ULA
           // prefix which can cause the linux kernel to frequently output two
           // back-to-back messages, one without the deprecated flag and one with
@@ -325,6 +354,10 @@ void AddressTrackerLinux::HandleMessage(char* buffer,
       } break;
       case RTM_DELADDR: {
         IPAddressNumber address;
+        const struct ifaddrmsg* msg =
+            reinterpret_cast<struct ifaddrmsg*>(NLMSG_DATA(header));
+        if (IsInterfaceIgnored(msg->ifa_index))
+          break;
         if (GetAddress(header, &address, NULL)) {
           AddressTrackerAutoLock lock(*this, address_map_lock_);
           if (address_map_.erase(address))
@@ -334,6 +367,12 @@ void AddressTrackerLinux::HandleMessage(char* buffer,
       case RTM_NEWLINK: {
         const struct ifinfomsg* msg =
             reinterpret_cast<struct ifinfomsg*>(NLMSG_DATA(header));
+        if (IsInterfaceIgnored(msg->ifi_index))
+          break;
+        if (IgnoreWirelessChange(header, msg)) {
+          VLOG(2) << "Ignoring RTM_NEWLINK message";
+          break;
+        }
         if (!(msg->ifi_flags & IFF_LOOPBACK) && (msg->ifi_flags & IFF_UP) &&
             (msg->ifi_flags & IFF_LOWER_UP) && (msg->ifi_flags & IFF_RUNNING)) {
           AddressTrackerAutoLock lock(*this, online_links_lock_);
@@ -354,6 +393,8 @@ void AddressTrackerLinux::HandleMessage(char* buffer,
       case RTM_DELLINK: {
         const struct ifinfomsg* msg =
             reinterpret_cast<struct ifinfomsg*>(NLMSG_DATA(header));
+        if (IsInterfaceIgnored(msg->ifi_index))
+          break;
         AddressTrackerAutoLock lock(*this, online_links_lock_);
         if (online_links_.erase(msg->ifi_index)) {
           *link_changed = true;

@@ -10,6 +10,7 @@
 
 #include "base/basictypes.h"
 #include "base/compiler_specific.h"
+#include "base/gtest_prod_util.h"
 #include "base/memory/scoped_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/prefs/pref_change_registrar.h"
@@ -81,15 +82,21 @@ class NET_EXPORT HttpServerPropertiesManager : public HttpServerProperties {
   base::WeakPtr<HttpServerProperties> GetWeakPtr() override;
   void Clear() override;
   bool SupportsRequestPriority(const HostPortPair& server) override;
+  bool GetSupportsSpdy(const HostPortPair& server) override;
   void SetSupportsSpdy(const HostPortPair& server, bool support_spdy) override;
   bool RequiresHTTP11(const HostPortPair& server) override;
   void SetHTTP11Required(const HostPortPair& server) override;
   void MaybeForceHTTP11(const HostPortPair& server,
                         SSLConfig* ssl_config) override;
-  AlternativeService GetAlternativeService(const HostPortPair& origin) override;
-  void SetAlternativeService(const HostPortPair& origin,
+  AlternativeServiceVector GetAlternativeServices(
+      const HostPortPair& origin) override;
+  bool SetAlternativeService(const HostPortPair& origin,
                              const AlternativeService& alternative_service,
-                             double alternative_probability) override;
+                             double alternative_probability,
+                             base::Time expiration) override;
+  bool SetAlternativeServices(const HostPortPair& origin,
+                              const AlternativeServiceInfoVector&
+                                  alternative_service_info_vector) override;
   void MarkAlternativeServiceBroken(
       const AlternativeService& alternative_service) override;
   void MarkAlternativeServiceRecentlyBroken(
@@ -100,10 +107,10 @@ class NET_EXPORT HttpServerPropertiesManager : public HttpServerProperties {
       const AlternativeService& alternative_service) override;
   void ConfirmAlternativeService(
       const AlternativeService& alternative_service) override;
-  void ClearAlternativeService(const HostPortPair& origin) override;
+  void ClearAlternativeServices(const HostPortPair& origin) override;
   const AlternativeServiceMap& alternative_service_map() const override;
-  base::Value* GetAlternativeServiceInfoAsValue() const override;
-  void SetAlternateProtocolProbabilityThreshold(double threshold) override;
+  scoped_ptr<base::Value> GetAlternativeServiceInfoAsValue() const override;
+  void SetAlternativeServiceProbabilityThreshold(double threshold) override;
   const SettingsMap& GetSpdySettings(
       const HostPortPair& host_port_pair) override;
   bool SetSpdySetting(const HostPortPair& host_port_pair,
@@ -123,6 +130,24 @@ class NET_EXPORT HttpServerPropertiesManager : public HttpServerProperties {
   const ServerNetworkStatsMap& server_network_stats_map() const override;
 
  protected:
+  // The location where ScheduleUpdatePrefsOnNetworkThread was called.
+  enum Location {
+    SUPPORTS_SPDY = 0,
+    HTTP_11_REQUIRED = 1,
+    SET_ALTERNATIVE_SERVICES = 2,
+    MARK_ALTERNATIVE_SERVICE_BROKEN = 3,
+    MARK_ALTERNATIVE_SERVICE_RECENTLY_BROKEN = 4,
+    CONFIRM_ALTERNATIVE_SERVICE = 5,
+    CLEAR_ALTERNATIVE_SERVICE = 6,
+    SET_SPDY_SETTING = 7,
+    CLEAR_SPDY_SETTINGS = 8,
+    CLEAR_ALL_SPDY_SETTINGS = 9,
+    SET_SUPPORTS_QUIC = 10,
+    SET_SERVER_NETWORK_STATS = 11,
+    DETECTED_CORRUPTED_PREFS = 12,
+    NUM_LOCATIONS = 13,
+  };
+
   // --------------------
   // SPDY related methods
 
@@ -154,7 +179,8 @@ class NET_EXPORT HttpServerPropertiesManager : public HttpServerProperties {
   // These are used to delay updating the preferences when cached data in
   // |http_server_properties_impl_| is changing, and execute only one update per
   // simultaneous spdy_servers or spdy_settings or alternative_service changes.
-  void ScheduleUpdatePrefsOnNetworkThread();
+  // |location| specifies where this method is called from. Virtual for testing.
+  virtual void ScheduleUpdatePrefsOnNetworkThread(Location location);
 
   // Starts the timers to update the prefs from cache. This are overridden in
   // tests to prevent the delay.
@@ -181,6 +207,10 @@ class NET_EXPORT HttpServerPropertiesManager : public HttpServerProperties {
                                const base::Closure& completion);
 
  private:
+  FRIEND_TEST_ALL_PREFIXES(HttpServerPropertiesManagerTest,
+                           AddToAlternativeServiceMap);
+  FRIEND_TEST_ALL_PREFIXES(HttpServerPropertiesManagerTest,
+                           AlternativeServiceExpirationDouble);
   void OnHttpServerPropertiesChanged();
 
   bool ReadSupportsQuic(const base::DictionaryValue& server_dict,
@@ -188,9 +218,10 @@ class NET_EXPORT HttpServerPropertiesManager : public HttpServerProperties {
   void AddToSpdySettingsMap(const HostPortPair& server,
                             const base::DictionaryValue& server_dict,
                             SpdySettingsMap* spdy_settings_map);
-  AlternativeServiceInfo ParseAlternativeServiceDict(
+  bool ParseAlternativeServiceDict(
       const base::DictionaryValue& alternative_service_dict,
-      const std::string& server_str);
+      const std::string& server_str,
+      AlternativeServiceInfo* alternative_service_info);
   bool AddToAlternativeServiceMap(
       const HostPortPair& server,
       const base::DictionaryValue& server_dict,
@@ -202,7 +233,7 @@ class NET_EXPORT HttpServerPropertiesManager : public HttpServerProperties {
   void SaveSpdySettingsToServerPrefs(const SettingsMap* spdy_settings_map,
                                      base::DictionaryValue* server_pref_dict);
   void SaveAlternativeServiceToServerPrefs(
-      const AlternativeServiceInfo* alternative_service_info,
+      const AlternativeServiceInfoVector* alternative_service_info_vector,
       base::DictionaryValue* server_pref_dict);
   void SaveNetworkStatsToServerPrefs(
       const ServerNetworkStats* server_network_stats,
@@ -221,8 +252,7 @@ class NET_EXPORT HttpServerPropertiesManager : public HttpServerProperties {
   base::WeakPtr<HttpServerPropertiesManager> pref_weak_ptr_;
 
   // Used to post cache update tasks.
-  scoped_ptr<base::OneShotTimer<HttpServerPropertiesManager> >
-      pref_cache_update_timer_;
+  scoped_ptr<base::OneShotTimer> pref_cache_update_timer_;
 
   // Used to track the spdy servers changes.
   PrefChangeRegistrar pref_change_registrar_;
@@ -237,8 +267,7 @@ class NET_EXPORT HttpServerPropertiesManager : public HttpServerProperties {
   const scoped_refptr<base::SequencedTaskRunner> network_task_runner_;
 
   // Used to post |prefs::kHttpServerProperties| pref update tasks.
-  scoped_ptr<base::OneShotTimer<HttpServerPropertiesManager> >
-      network_prefs_update_timer_;
+  scoped_ptr<base::OneShotTimer> network_prefs_update_timer_;
 
   scoped_ptr<HttpServerPropertiesImpl> http_server_properties_impl_;
 

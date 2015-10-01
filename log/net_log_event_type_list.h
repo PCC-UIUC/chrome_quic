@@ -453,6 +453,9 @@ EVENT_TYPE(SSL_SERVER_HANDSHAKE)
 // The SSL server requested a client certificate.
 EVENT_TYPE(SSL_CLIENT_CERT_REQUESTED)
 
+// The SSL stack blocked on a private key operation.
+EVENT_TYPE(SSL_PRIVATE_KEY_OPERATION)
+
 // The start/end of getting a domain-bound certificate and private key.
 //
 // The END event will contain the following parameters on failure:
@@ -728,7 +731,7 @@ EVENT_TYPE(BACKUP_CONNECT_JOB_CREATED)
 //
 // The event parameters are:
 //   {
-//      "source_dependency": <Source identifer for the connect job we are
+//      "source_dependency": <Source identifier for the connect job we are
 //                            bound to>,
 //   }
 EVENT_TYPE(SOCKET_POOL_BOUND_TO_CONNECT_JOB)
@@ -868,34 +871,11 @@ EVENT_TYPE(HTTP_CACHE_WRITE_DATA)
 //   }
 EVENT_TYPE(HTTP_CACHE_CALLER_REQUEST_HEADERS)
 
-// Signal a significant change on the flow of the satate machine: start again
+// Signal a significant change on the flow of the state machine: start again
 // from scratch or create a new network request for byte-range operations.
 // There are no parameters.
 EVENT_TYPE(HTTP_CACHE_RESTART_PARTIAL_REQUEST)
 EVENT_TYPE(HTTP_CACHE_RE_SEND_PARTIAL_REQUEST)
-
-// Identifies the NetLog::Source() for the asynchronous HttpCache::Transaction
-// that will revalidate this entry.
-// The event parameters are:
-//   {
-//      "source_dependency": <Source identifier for the async Transaction>
-//   }
-EVENT_TYPE(HTTP_CACHE_VALIDATE_RESOURCE_ASYNC)
-
-// The start/end of performing an async revalidation.
-// For the BEGIN phase, the event parameters are:
-//   {
-//      "source_dependency": <Source identifier for the Request>
-//      "url": <String of URL being loaded>,
-//      "method": <Method of request>
-//   }
-//
-// For the END phase, if there was an error, the following parameters are
-// attached:
-//   {
-//      "net_error": <Net error code of the failure>,
-//   }
-EVENT_TYPE(ASYNC_REVALIDATION)
 
 // ------------------------------------------------------------------------
 // Disk Cache / Memory Cache
@@ -990,7 +970,24 @@ EVENT_TYPE(ENTRY_DOOM)
 EVENT_TYPE(HTTP_STREAM_REQUEST)
 
 // Measures the time taken to execute the HttpStreamFactoryImpl::Job
+// The event parameters are:
+//   {
+//      "source_dependency": <Source identifier for the Request with started
+//                            this Job>,
+//      "original_url": <The URL to create a stream for>,
+//      "url": <The URL actually being used, possibly different from
+//              original_url if using an alternate service>,
+//      "alternate_service": <The alternate service being used>,
+//      "priority": <The priority of the Job>,
+//   }
 EVENT_TYPE(HTTP_STREAM_JOB)
+
+// Identifies the NetLog::Source() for a Job started by the Request.
+// The event parameters are:
+//   {
+//      "source_dependency": <Source identifier for Job we started>,
+//   }
+EVENT_TYPE(HTTP_STREAM_REQUEST_STARTED_JOB)
 
 // Identifies the NetLog::Source() for the Job that fulfilled the Request.
 // The event parameters are:
@@ -1014,6 +1011,10 @@ EVENT_TYPE(HTTP_STREAM_JOB_BOUND_TO_REQUEST)
 //      "server_protos": <The list of server advertised protocols>,
 //   }
 EVENT_TYPE(HTTP_STREAM_REQUEST_PROTO)
+
+// Emitted when a Job is orphaned because the Request was bound to a different
+// Job. The orphaned Job will continue to run to completion.
+EVENT_TYPE(HTTP_STREAM_JOB_ORPHANED)
 
 // ------------------------------------------------------------------------
 // HttpNetworkTransaction
@@ -1432,6 +1433,11 @@ EVENT_TYPE(QUIC_SESSION)
 //   }
 EVENT_TYPE(QUIC_SESSION_CLOSE_ON_ERROR)
 
+// Session verification of a certificate from the server failed.
+//   {
+//   }
+EVENT_TYPE(QUIC_SESSION_CERTIFICATE_VERIFY_FAILED)
+
 // Session verified a certificate from the server.
 //   {
 //     "subjects": <list of DNS names that the certificate is valid for>,
@@ -1464,17 +1470,28 @@ EVENT_TYPE(QUIC_SESSION_PACKET_SENT)
 //   }
 EVENT_TYPE(QUIC_SESSION_PACKET_RETRANSMITTED)
 
-// Session received a QUIC packet header for a valid packet.
+// Session received a QUIC packet with a sequence number that had previously
+// been received.
+//   {
+//     "packet_sequence_number": <The packet's full 64-bit sequence number>
+//   }
+EVENT_TYPE(QUIC_SESSION_DUPLICATE_PACKET_RECEIVED)
+
+// Session received a QUIC packet header, which has not yet been authenticated.
 //   {
 //     "connection_id": <The 64-bit CONNECTION_ID for this connection, as a
 //                       base-10 string>,
-//     "public_flags": <The public flags set for this packet>,
+//     "reset_flag": <True if the reset flag is set for this packet>,
+//     "version_flag": <True if the version flag is set for this packet>,
 //     "packet_sequence_number": <The packet's full 64-bit sequence number,
 //                                as a base-10 string.>,
 //     "private_flags": <The private flags set for this packet>,
 //     "fec_group": <The FEC group of this packet>,
 //   }
-EVENT_TYPE(QUIC_SESSION_PACKET_HEADER_RECEIVED)
+EVENT_TYPE(QUIC_SESSION_UNAUTHENTICATED_PACKET_HEADER_RECEIVED)
+
+// Session has authenticated a QUIC packet.
+EVENT_TYPE(QUIC_SESSION_PACKET_AUTHENTICATED)
 
 // Session received a STREAM frame.
 //   {
@@ -1577,6 +1594,9 @@ EVENT_TYPE(QUIC_SESSION_PING_FRAME_RECEIVED)
 
 // Session sent a PING frame.
 EVENT_TYPE(QUIC_SESSION_PING_FRAME_SENT)
+
+// Session sent an MTU discovery frame (PING on wire).
+EVENT_TYPE(QUIC_SESSION_MTU_DISCOVERY_FRAME_SENT)
 
 // Session received a STOP_WAITING frame.
 //   {
@@ -1681,7 +1701,7 @@ EVENT_TYPE(QUIC_SESSION_PUBLIC_RESET_PACKET_RECEIVED)
 //   }
 EVENT_TYPE(QUIC_SESSION_VERSION_NEGOTIATION_PACKET_RECEIVED)
 
-// Session sucessfully negotiated QUIC version number.
+// Session successfully negotiated QUIC version number.
 //   {
 //     "version": <String of QUIC version negotiated with the server>,
 //   }
@@ -1780,8 +1800,8 @@ EVENT_TYPE(AUTH_SERVER)
 // HTML5 Application Cache
 // ------------------------------------------------------------------------
 
-// This event is emitted whenever a request is satistifed directly from
-// the appache.
+// This event is emitted whenever a request is satisfied directly from
+// the appcache.
 EVENT_TYPE(APPCACHE_DELIVERING_CACHED_RESPONSE)
 
 // This event is emitted whenever the appcache uses a fallback response.
@@ -1793,6 +1813,75 @@ EVENT_TYPE(APPCACHE_DELIVERING_ERROR_RESPONSE)
 // This event is emitted whenever the appcache executes script to compute
 // a response.
 EVENT_TYPE(APPCACHE_DELIVERING_EXECUTABLE_RESPONSE)
+
+// ------------------------------------------------------------------------
+// Service Worker
+// ------------------------------------------------------------------------
+// This event is emitted when Service Worker starts to handle a request.
+EVENT_TYPE(SERVICE_WORKER_START_REQUEST)
+
+// This event is emitted when Service Worker results in a fallback to network
+// response.
+EVENT_TYPE(SERVICE_WORKER_FALLBACK_RESPONSE)
+
+// This event is emitted when Service Worker results in a fallback to network
+// response, and asks the renderer rather than the browser to do the fallback
+// due to CORS.
+EVENT_TYPE(SERVICE_WORKER_FALLBACK_FOR_CORS)
+
+// This event is emitted when Service Worker responds with a headers-only
+// response.
+EVENT_TYPE(SERVICE_WORKER_HEADERS_ONLY_RESPONSE)
+
+// This event is emitted when Service Worker responds with a stream.
+EVENT_TYPE(SERVICE_WORKER_STREAM_RESPONSE)
+
+// This event is emitted when Service Worker responds with a blob.
+EVENT_TYPE(SERVICE_WORKER_BLOB_RESPONSE)
+
+// This event is emitted when Service Worker instructs the browser
+// to respond with a network error.
+EVENT_TYPE(SERVICE_WORKER_ERROR_RESPONSE_STATUS_ZERO)
+
+// This event is emitted when Service Worker attempts to respond with
+// a blob, but it was not readable.
+EVENT_TYPE(SERVICE_WORKER_ERROR_BAD_BLOB)
+
+// This event is emitted when Service Worker fails to respond because
+// the provider host was null.
+EVENT_TYPE(SERVICE_WORKER_ERROR_NO_PROVIDER_HOST)
+
+// This event is emitted when Service Worker fails to respond because
+// the registration had no active version.
+EVENT_TYPE(SERVICE_WORKER_ERROR_NO_ACTIVE_VERSION)
+
+// This event is emitted when Service Worker fails to respond because
+// the underlying request was detached.
+EVENT_TYPE(SERVICE_WORKER_ERROR_NO_REQUEST)
+
+// This event is emitted when Service Worker fails to respond because
+// the fetch event could not be dispatched to the worker.
+EVENT_TYPE(SERVICE_WORKER_ERROR_FETCH_EVENT_DISPATCH)
+
+// This event is emitted when Service Worker fails to respond because
+// of an error when reading the blob response.
+EVENT_TYPE(SERVICE_WORKER_ERROR_BLOB_READ)
+
+// This event is emitted when Service Worker fails to respond because
+// of an error when reading the stream response.
+EVENT_TYPE(SERVICE_WORKER_ERROR_STREAM_ABORTED)
+
+// This event is emitted when Service Worker is destroyed before it
+// responds.
+EVENT_TYPE(SERVICE_WORKER_ERROR_KILLED)
+
+// This event is emitted when Service Worker is destroyed before it
+// finishes responding with a blob.
+EVENT_TYPE(SERVICE_WORKER_ERROR_KILLED_WITH_BLOB)
+
+// This event is emitted when Service Worker is destroyed before it
+// finishes responding with a stream.
+EVENT_TYPE(SERVICE_WORKER_ERROR_KILLED_WITH_STREAM)
 
 // ------------------------------------------------------------------------
 // Global events
@@ -1938,7 +2027,7 @@ EVENT_TYPE(CHROME_EXTENSION_ABORTED_REQUEST)
 //  }
 EVENT_TYPE(CHROME_EXTENSION_REDIRECTED_REQUEST)
 
-// This event is created when a Chrome extension modifieds the headers of a
+// This event is created when a Chrome extension modifies the headers of a
 // request.
 //
 //  {
@@ -2034,7 +2123,7 @@ EVENT_TYPE(CERT_VERIFIER_JOB)
 //
 // The event parameters are:
 //   {
-//      "source_dependency": <Source identifer for the job we are bound to>,
+//      "source_dependency": <Source identifier for the job we are bound to>,
 //   }
 EVENT_TYPE(CERT_VERIFIER_REQUEST_BOUND_TO_JOB)
 
@@ -2061,7 +2150,7 @@ EVENT_TYPE(DOWNLOAD_URL_REQUEST)
 // ------------------------------------------------------------------------
 
 // This event lives for as long as a download item is active.
-// The BEGIN event occurs right after constrction, and has the following
+// The BEGIN event occurs right after construction, and has the following
 // parameters:
 //   {
 //     "type": <New/history/save page>,
@@ -2188,7 +2277,7 @@ EVENT_TYPE(DOWNLOAD_FILE_DELETED)
 //   {
 //     "operation": <open, write, close, etc>,
 //     "net_error": <net::Error code>,
-//     "os_error": <OS depedent error code>
+//     "os_error": <OS dependent error code>
 //     "interrupt_reason": <Download interrupt reason>
 //   }
 EVENT_TYPE(DOWNLOAD_FILE_ERROR)
@@ -2500,6 +2589,9 @@ EVENT_TYPE(DATA_REDUCTION_PROXY_ENABLED)
 // The END phase contains the following parameters:
 //  {
 //    "net_error": <The net_error of the completion of the canary request>,
+//    "http_response_code": <The HTTP response code of the canary request>,
+//    "check_succeeded": <Whether a secure Data Reduction Proxy can be used or
+//                        not>
 //  }
 EVENT_TYPE(DATA_REDUCTION_PROXY_CANARY_REQUEST)
 
@@ -2530,3 +2622,21 @@ EVENT_TYPE(DATA_REDUCTION_PROXY_BYPASS_REQUESTED)
 //                  can be 0 if the proxy server is explicitly skipped>,
 //  }
 EVENT_TYPE(DATA_REDUCTION_PROXY_FALLBACK)
+
+// The start/end of a config request is sent to the Data Saver Config API
+// service.
+//
+// The BEGIN phase contains the following parameters:
+//  {
+//    "url": <The URL of the service endpoint>,
+//  }
+//
+// The END phase contains the following parameters:
+//  {
+//    "net_error": <The net_error of the completion of the config request>,
+//    "http_response_code": <The HTTP response code of the config request>,
+//    "failure_count": <The number of consecutive config request failures>,
+//    "retry_delay_seconds": <The length of time after which another config
+//                            request will be made>,
+//  }
+EVENT_TYPE(DATA_REDUCTION_PROXY_CONFIG_REQUEST)

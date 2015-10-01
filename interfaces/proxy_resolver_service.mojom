@@ -30,22 +30,33 @@ struct ProxyServer {
 };
 
 interface ProxyResolver {
-  SetPacScript(string data) => (int32 result);
-
   // Use a ProxyResolverRequestClient instead of returning a result so we can
-  // receive load state updates and cancel in-flight requests by destroying the
-  // client.
-  // TODO(amistry): Add BoundNetLog.
+  // cancel in-flight requests by destroying the client.
   GetProxyForUrl(string url, ProxyResolverRequestClient client);
 };
 
 interface ProxyResolverRequestClient {
   ReportResult(int32 error, array<ProxyServer>? proxy_servers);
-  LoadStateChanged(int32 load_state);
+
+  Alert(string error);
+  OnError(int32 line_number, string error);
+
+  ResolveDns(HostResolverRequestInfo request_info,
+             HostResolverRequestClient client);
 };
 
 interface ProxyResolverFactory {
-  // TODO(amistry): Add NetLog and ProxyResolverErrorObserver.
-  CreateResolver(ProxyResolver& resolver,
-                 HostResolver host_resolver);
+  CreateResolver(string pac_script,
+                 ProxyResolver& resolver,
+                 ProxyResolverFactoryRequestClient client);
+};
+
+interface ProxyResolverFactoryRequestClient {
+  ReportResult(int32 error);
+
+  Alert(string error);
+  OnError(int32 line_number, string error);
+
+  ResolveDns(HostResolverRequestInfo request_info,
+             HostResolverRequestClient client);
 };

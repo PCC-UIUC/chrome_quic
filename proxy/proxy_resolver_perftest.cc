@@ -5,12 +5,15 @@
 #include "base/base_paths.h"
 #include "base/compiler_specific.h"
 #include "base/files/file_util.h"
+#include "base/message_loop/message_loop.h"
 #include "base/path_service.h"
 #include "base/strings/string_util.h"
 #include "base/test/perf_time_logger.h"
 #include "net/base/net_errors.h"
 #include "net/dns/mock_host_resolver.h"
 #include "net/proxy/proxy_info.h"
+#include "net/proxy/proxy_resolver.h"
+#include "net/proxy/proxy_resolver_factory.h"
 #include "net/proxy/proxy_resolver_v8.h"
 #include "net/test/spawned_test_server/spawned_test_server.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -85,8 +88,9 @@ const int kNumIterations = 500;
 class PacPerfSuiteRunner {
  public:
   // |resolver_name| is the label used when logging the results.
-  PacPerfSuiteRunner(ProxyResolver* resolver, const std::string& resolver_name)
-      : resolver_(resolver),
+  PacPerfSuiteRunner(ProxyResolverFactory* factory,
+                     const std::string& resolver_name)
+      : factory_(factory),
         resolver_name_(resolver_name),
         test_server_(SpawnedTestServer::TYPE_HTTP,
                      SpawnedTestServer::kLocalhost,
@@ -107,15 +111,18 @@ class PacPerfSuiteRunner {
   void RunTest(const std::string& script_name,
                const PacQuery* queries,
                int queries_len) {
-    if (!resolver_->expects_pac_bytes()) {
+    scoped_ptr<ProxyResolver> resolver;
+    if (!factory_->expects_pac_bytes()) {
       GURL pac_url =
           test_server_.GetURL(std::string("files/") + script_name);
-      int rv = resolver_->SetPacScript(
-          ProxyResolverScriptData::FromURL(pac_url), CompletionCallback());
+      int rv = factory_->CreateProxyResolver(
+          ProxyResolverScriptData::FromURL(pac_url), &resolver,
+          CompletionCallback(), nullptr);
       EXPECT_EQ(OK, rv);
     } else {
-      LoadPacScriptIntoResolver(script_name);
+      resolver = LoadPacScriptAndCreateResolver(script_name);
     }
+    ASSERT_TRUE(resolver);
 
     // Do a query to warm things up. In the case of internal-fetch proxy
     // resolvers, the first resolve will be slow since it has to download
@@ -123,8 +130,8 @@ class PacPerfSuiteRunner {
     {
       ProxyInfo proxy_info;
       int result =
-          resolver_->GetProxyForURL(GURL("http://www.warmup.com"), &proxy_info,
-                                    CompletionCallback(), NULL, BoundNetLog());
+          resolver->GetProxyForURL(GURL("http://www.warmup.com"), &proxy_info,
+                                   CompletionCallback(), NULL, BoundNetLog());
       ASSERT_EQ(OK, result);
     }
 
@@ -139,8 +146,8 @@ class PacPerfSuiteRunner {
       // Resolve.
       ProxyInfo proxy_info;
       int result =
-          resolver_->GetProxyForURL(GURL(query.query_url), &proxy_info,
-                                    CompletionCallback(), NULL, BoundNetLog());
+          resolver->GetProxyForURL(GURL(query.query_url), &proxy_info,
+                                   CompletionCallback(), NULL, BoundNetLog());
 
       // Check that the result was correct. Note that ToPacString() and
       // ASSERT_EQ() are fast, so they won't skew the results.
@@ -153,7 +160,8 @@ class PacPerfSuiteRunner {
   }
 
   // Read the PAC script from disk and initialize the proxy resolver with it.
-  void LoadPacScriptIntoResolver(const std::string& script_name) {
+  scoped_ptr<ProxyResolver> LoadPacScriptAndCreateResolver(
+      const std::string& script_name) {
     base::FilePath path;
     PathService::Get(base::DIR_SOURCE_ROOT, &path);
     path = path.AppendASCII("net");
@@ -167,29 +175,33 @@ class PacPerfSuiteRunner {
 
     // If we can't load the file from disk, something is misconfigured.
     LOG_IF(ERROR, !ok) << "Failed to read file: " << path.value();
-    ASSERT_TRUE(ok);
+    if (!ok)
+      return nullptr;
 
     // Load the PAC script into the ProxyResolver.
-    int rv = resolver_->SetPacScript(
-        ProxyResolverScriptData::FromUTF8(file_contents), CompletionCallback());
+    scoped_ptr<ProxyResolver> resolver;
+    int rv = factory_->CreateProxyResolver(
+        ProxyResolverScriptData::FromUTF8(file_contents), &resolver,
+        CompletionCallback(), nullptr);
     EXPECT_EQ(OK, rv);
+    return resolver;
   }
 
-  ProxyResolver* resolver_;
+  ProxyResolverFactory* factory_;
   std::string resolver_name_;
   SpawnedTestServer test_server_;
 };
 
 #if defined(OS_WIN)
 TEST(ProxyResolverPerfTest, ProxyResolverWinHttp) {
-  ProxyResolverWinHttp resolver;
-  PacPerfSuiteRunner runner(&resolver, "ProxyResolverWinHttp");
+  ProxyResolverFactoryWinHttp factory;
+  PacPerfSuiteRunner runner(&factory, "ProxyResolverWinHttp");
   runner.RunAllTests();
 }
 #elif defined(OS_MACOSX)
 TEST(ProxyResolverPerfTest, ProxyResolverMac) {
-  ProxyResolverMac resolver;
-  PacPerfSuiteRunner runner(&resolver, "ProxyResolverMac");
+  ProxyResolverFactoryMac factory;
+  PacPerfSuiteRunner runner(&factory, "ProxyResolverMac");
   runner.RunAllTests();
 }
 #endif
@@ -213,11 +225,61 @@ class MockJSBindings : public ProxyResolverV8::JSBindings {
   }
 };
 
+class ProxyResolverV8Wrapper : public ProxyResolver {
+ public:
+  ProxyResolverV8Wrapper(scoped_ptr<ProxyResolverV8> resolver,
+                         scoped_ptr<MockJSBindings> bindings)
+      : resolver_(resolver.Pass()), bindings_(bindings.Pass()) {}
+
+  int GetProxyForURL(const GURL& url,
+                     ProxyInfo* results,
+                     const CompletionCallback& /*callback*/,
+                     RequestHandle* /*request*/,
+                     const BoundNetLog& net_log) override {
+    return resolver_->GetProxyForURL(url, results, bindings_.get());
+  }
+
+  void CancelRequest(RequestHandle request) override { NOTREACHED(); }
+
+  LoadState GetLoadState(RequestHandle request) const override {
+    NOTREACHED();
+    return LOAD_STATE_IDLE;
+  }
+
+ private:
+  scoped_ptr<ProxyResolverV8> resolver_;
+  scoped_ptr<MockJSBindings> bindings_;
+
+  DISALLOW_COPY_AND_ASSIGN(ProxyResolverV8Wrapper);
+};
+
+class ProxyResolverV8Factory : public ProxyResolverFactory {
+ public:
+  ProxyResolverV8Factory() : ProxyResolverFactory(true) {}
+  int CreateProxyResolver(
+      const scoped_refptr<ProxyResolverScriptData>& pac_script,
+      scoped_ptr<ProxyResolver>* resolver,
+      const net::CompletionCallback& callback,
+      scoped_ptr<Request>* request) override {
+    scoped_ptr<ProxyResolverV8> v8_resolver;
+    scoped_ptr<MockJSBindings> js_bindings_(new MockJSBindings);
+    int result =
+        ProxyResolverV8::Create(pac_script, js_bindings_.get(), &v8_resolver);
+    if (result == OK) {
+      resolver->reset(
+          new ProxyResolverV8Wrapper(v8_resolver.Pass(), js_bindings_.Pass()));
+    }
+    return result;
+  }
+
+ private:
+  DISALLOW_COPY_AND_ASSIGN(ProxyResolverV8Factory);
+};
+
 TEST(ProxyResolverPerfTest, ProxyResolverV8) {
-  MockJSBindings js_bindings;
-  ProxyResolverV8 resolver;
-  resolver.set_js_bindings(&js_bindings);
-  PacPerfSuiteRunner runner(&resolver, "ProxyResolverV8");
+  base::MessageLoop message_loop;
+  ProxyResolverV8Factory factory;
+  PacPerfSuiteRunner runner(&factory, "ProxyResolverV8");
   runner.RunAllTests();
 }
 

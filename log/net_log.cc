@@ -17,68 +17,74 @@ namespace net {
 
 namespace {
 
-// Returns parameters for logging data transferred events. At a minum includes
+// Returns parameters for logging data transferred events. At a minimum includes
 // the number of bytes transferred. If the capture mode allows logging byte
 // contents and |byte_count| > 0, then will include the actual bytes. The
 // bytes are hex-encoded, since base::StringValue only supports UTF-8.
-base::Value* BytesTransferredCallback(int byte_count,
-                                      const char* bytes,
-                                      NetLogCaptureMode capture_mode) {
-  base::DictionaryValue* dict = new base::DictionaryValue();
+scoped_ptr<base::Value> BytesTransferredCallback(
+    int byte_count,
+    const char* bytes,
+    NetLogCaptureMode capture_mode) {
+  scoped_ptr<base::DictionaryValue> dict(new base::DictionaryValue());
   dict->SetInteger("byte_count", byte_count);
   if (capture_mode.include_socket_bytes() && byte_count > 0)
     dict->SetString("hex_encoded_bytes", base::HexEncode(bytes, byte_count));
-  return dict;
+  return dict.Pass();
 }
 
-base::Value* SourceEventParametersCallback(
+scoped_ptr<base::Value> SourceEventParametersCallback(
     const NetLog::Source source,
     NetLogCaptureMode /* capture_mode */) {
   if (!source.IsValid())
-    return NULL;
-  base::DictionaryValue* event_params = new base::DictionaryValue();
-  source.AddToEventParameters(event_params);
-  return event_params;
+    return scoped_ptr<base::Value>();
+  scoped_ptr<base::DictionaryValue> event_params(new base::DictionaryValue());
+  source.AddToEventParameters(event_params.get());
+  return event_params.Pass();
 }
 
-base::Value* NetLogBoolCallback(const char* name,
-                                bool value,
-                                NetLogCaptureMode /* capture_mode */) {
-  base::DictionaryValue* event_params = new base::DictionaryValue();
+scoped_ptr<base::Value> NetLogBoolCallback(
+    const char* name,
+    bool value,
+    NetLogCaptureMode /* capture_mode */) {
+  scoped_ptr<base::DictionaryValue> event_params(new base::DictionaryValue());
   event_params->SetBoolean(name, value);
-  return event_params;
+  return event_params.Pass();
 }
 
-base::Value* NetLogIntegerCallback(const char* name,
-                                   int value,
-                                   NetLogCaptureMode /* capture_mode */) {
-  base::DictionaryValue* event_params = new base::DictionaryValue();
+scoped_ptr<base::Value> NetLogIntegerCallback(
+    const char* name,
+    int value,
+    NetLogCaptureMode /* capture_mode */) {
+  scoped_ptr<base::DictionaryValue> event_params(new base::DictionaryValue());
   event_params->SetInteger(name, value);
-  return event_params;
+  return event_params.Pass();
 }
 
-base::Value* NetLogInt64Callback(const char* name,
-                                 int64 value,
-                                 NetLogCaptureMode /* capture_mode */) {
-  base::DictionaryValue* event_params = new base::DictionaryValue();
+scoped_ptr<base::Value> NetLogInt64Callback(
+    const char* name,
+    int64 value,
+    NetLogCaptureMode /* capture_mode */) {
+  scoped_ptr<base::DictionaryValue> event_params(new base::DictionaryValue());
   event_params->SetString(name, base::Int64ToString(value));
-  return event_params;
+  return event_params.Pass();
 }
 
-base::Value* NetLogStringCallback(const char* name,
-                                  const std::string* value,
-                                  NetLogCaptureMode /* capture_mode */) {
-  base::DictionaryValue* event_params = new base::DictionaryValue();
+scoped_ptr<base::Value> NetLogStringCallback(
+    const char* name,
+    const std::string* value,
+    NetLogCaptureMode /* capture_mode */) {
+  scoped_ptr<base::DictionaryValue> event_params(new base::DictionaryValue());
   event_params->SetString(name, *value);
-  return event_params;
+  return event_params.Pass();
 }
 
-base::Value* NetLogString16Callback(const char* name,
-                                    const base::string16* value,
-                                    NetLogCaptureMode /* capture_mode */) {
-  base::DictionaryValue* event_params = new base::DictionaryValue();
+scoped_ptr<base::Value> NetLogString16Callback(
+    const char* name,
+    const base::string16* value,
+    NetLogCaptureMode /* capture_mode */) {
+  scoped_ptr<base::DictionaryValue> event_params(new base::DictionaryValue());
   event_params->SetString(name, *value);
-  return event_params;
+  return event_params.Pass();
 }
 
 }  // namespace
@@ -98,10 +104,10 @@ bool NetLog::Source::IsValid() const {
 
 void NetLog::Source::AddToEventParameters(
     base::DictionaryValue* event_params) const {
-  base::DictionaryValue* dict = new base::DictionaryValue();
+  scoped_ptr<base::DictionaryValue> dict(new base::DictionaryValue());
   dict->SetInteger("type", static_cast<int>(type));
   dict->SetInteger("id", static_cast<int>(id));
-  event_params->Set("source_dependency", dict);
+  event_params->Set("source_dependency", dict.Pass());
 }
 
 NetLog::ParametersCallback NetLog::Source::ToEventParametersCallback() const {
@@ -130,15 +136,15 @@ bool NetLog::Source::FromEventParameters(base::Value* event_params,
 }
 
 base::Value* NetLog::Entry::ToValue() const {
-  base::DictionaryValue* entry_dict(new base::DictionaryValue());
+  scoped_ptr<base::DictionaryValue> entry_dict(new base::DictionaryValue());
 
   entry_dict->SetString("time", TickCountToString(data_->time));
 
   // Set the entry source.
-  base::DictionaryValue* source_dict = new base::DictionaryValue();
+  scoped_ptr<base::DictionaryValue> source_dict(new base::DictionaryValue());
   source_dict->SetInteger("id", data_->source.id);
   source_dict->SetInteger("type", static_cast<int>(data_->source.type));
-  entry_dict->Set("source", source_dict);
+  entry_dict->Set("source", source_dict.Pass());
 
   // Set the event info.
   entry_dict->SetInteger("type", static_cast<int>(data_->type));
@@ -146,17 +152,18 @@ base::Value* NetLog::Entry::ToValue() const {
 
   // Set the event-specific parameters.
   if (data_->parameters_callback) {
-    base::Value* value = data_->parameters_callback->Run(capture_mode_);
+    scoped_ptr<base::Value> value(
+        data_->parameters_callback->Run(capture_mode_));
     if (value)
-      entry_dict->Set("params", value);
+      entry_dict->Set("params", value.Pass());
   }
 
-  return entry_dict;
+  return entry_dict.release();
 }
 
 base::Value* NetLog::Entry::ParametersToValue() const {
   if (data_->parameters_callback)
-    return data_->parameters_callback->Run(capture_mode_);
+    return data_->parameters_callback->Run(capture_mode_).release();
   return NULL;
 }
 
@@ -205,10 +212,7 @@ void NetLog::ThreadSafeObserver::OnAddEntryData(const EntryData& entry_data) {
   OnAddEntry(Entry(&entry_data, capture_mode()));
 }
 
-NetLog::NetLog()
-    : last_id_(0),
-      effective_capture_mode_int32_(
-          NetLogCaptureMode::None().ToInternalValue()) {
+NetLog::NetLog() : last_id_(0), is_capturing_(0) {
 }
 
 NetLog::~NetLog() {
@@ -230,36 +234,28 @@ uint32 NetLog::NextID() {
   return base::subtle::NoBarrier_AtomicIncrement(&last_id_, 1);
 }
 
-NetLogCaptureMode NetLog::GetCaptureMode() const {
-  base::subtle::Atomic32 capture_mode =
-      base::subtle::NoBarrier_Load(&effective_capture_mode_int32_);
-  return NetLogCaptureMode::FromInternalValue(capture_mode);
+bool NetLog::IsCapturing() const {
+  return base::subtle::NoBarrier_Load(&is_capturing_) != 0;
 }
 
 void NetLog::DeprecatedAddObserver(NetLog::ThreadSafeObserver* observer,
                                    NetLogCaptureMode capture_mode) {
-  DCHECK(capture_mode.enabled());
-
   base::AutoLock lock(lock_);
 
   DCHECK(!observer->net_log_);
-  DCHECK(!observer->capture_mode_.enabled());
   observers_.AddObserver(observer);
   observer->net_log_ = this;
   observer->capture_mode_ = capture_mode;
-  UpdateCaptureMode();
+  UpdateIsCapturing();
 }
 
 void NetLog::SetObserverCaptureMode(NetLog::ThreadSafeObserver* observer,
                                     NetLogCaptureMode capture_mode) {
-  DCHECK(capture_mode.enabled());
   base::AutoLock lock(lock_);
 
   DCHECK(observers_.HasObserver(observer));
   DCHECK_EQ(this, observer->net_log_);
-  DCHECK(observer->capture_mode_.enabled());
   observer->capture_mode_ = capture_mode;
-  UpdateCaptureMode();
 }
 
 void NetLog::DeprecatedRemoveObserver(NetLog::ThreadSafeObserver* observer) {
@@ -267,26 +263,16 @@ void NetLog::DeprecatedRemoveObserver(NetLog::ThreadSafeObserver* observer) {
 
   DCHECK(observers_.HasObserver(observer));
   DCHECK_EQ(this, observer->net_log_);
-  DCHECK(observer->capture_mode_.enabled());
   observers_.RemoveObserver(observer);
   observer->net_log_ = NULL;
   observer->capture_mode_ = NetLogCaptureMode();
-  UpdateCaptureMode();
+  UpdateIsCapturing();
 }
 
-void NetLog::UpdateCaptureMode() {
+void NetLog::UpdateIsCapturing() {
   lock_.AssertAcquired();
-
-  // Accumulate the capture mode of all the observers to find the maximum level.
-  NetLogCaptureMode new_capture_mode = NetLogCaptureMode::None();
-  ObserverListBase<ThreadSafeObserver>::Iterator it(&observers_);
-  ThreadSafeObserver* observer;
-  while ((observer = it.GetNext()) != NULL) {
-    new_capture_mode =
-        NetLogCaptureMode::Max(new_capture_mode, observer->capture_mode());
-  }
-  base::subtle::NoBarrier_Store(&effective_capture_mode_int32_,
-                                new_capture_mode.ToInternalValue());
+  base::subtle::NoBarrier_Store(&is_capturing_,
+                                observers_.might_have_observers() ? 1 : 0);
 }
 
 // static
@@ -311,11 +297,11 @@ const char* NetLog::EventTypeToString(EventType event) {
 
 // static
 base::Value* NetLog::GetEventTypesAsValue() {
-  base::DictionaryValue* dict = new base::DictionaryValue();
+  scoped_ptr<base::DictionaryValue> dict(new base::DictionaryValue());
   for (int i = 0; i < EVENT_COUNT; ++i) {
     dict->SetInteger(EventTypeToString(static_cast<EventType>(i)), i);
   }
-  return dict;
+  return dict.release();
 }
 
 // static
@@ -334,11 +320,11 @@ const char* NetLog::SourceTypeToString(SourceType source) {
 
 // static
 base::Value* NetLog::GetSourceTypesAsValue() {
-  base::DictionaryValue* dict = new base::DictionaryValue();
+  scoped_ptr<base::DictionaryValue> dict(new base::DictionaryValue());
   for (int i = 0; i < SOURCE_COUNT; ++i) {
     dict->SetInteger(SourceTypeToString(static_cast<SourceType>(i)), i);
   }
-  return dict;
+  return dict.release();
 }
 
 // static
@@ -390,7 +376,7 @@ void NetLog::AddEntry(EventType type,
                       const Source& source,
                       EventPhase phase,
                       const NetLog::ParametersCallback* parameters_callback) {
-  if (!GetCaptureMode().enabled())
+  if (!IsCapturing())
     return;
   EntryData entry_data(type, source, phase, base::TimeTicks::Now(),
                        parameters_callback);
@@ -480,12 +466,9 @@ void BoundNetLog::AddByteTransferEvent(NetLog::EventType event_type,
   AddEvent(event_type, base::Bind(BytesTransferredCallback, byte_count, bytes));
 }
 
-NetLogCaptureMode BoundNetLog::GetCaptureMode() const {
+bool BoundNetLog::IsCapturing() const {
   CrashIfInvalid();
-
-  if (net_log_)
-    return net_log_->GetCaptureMode();
-  return NetLogCaptureMode();
+  return net_log_ && net_log_->IsCapturing();
 }
 
 // static

@@ -4,6 +4,7 @@
 
 #include "net/proxy/proxy_service.h"
 
+#include <cstdarg>
 #include <vector>
 
 #include "base/format_macros.h"
@@ -14,10 +15,10 @@
 #include "net/base/net_errors.h"
 #include "net/base/network_delegate_impl.h"
 #include "net/base/test_completion_callback.h"
-#include "net/log/captured_net_log_entry.h"
 #include "net/log/net_log.h"
-#include "net/log/net_log_unittest.h"
 #include "net/log/test_net_log.h"
+#include "net/log/test_net_log_entry.h"
+#include "net/log/test_net_log_util.h"
 #include "net/proxy/dhcp_proxy_script_fetcher.h"
 #include "net/proxy/mock_proxy_resolver.h"
 #include "net/proxy/mock_proxy_script_fetcher.h"
@@ -156,7 +157,7 @@ class MockProxyConfigService: public ProxyConfigService {
  private:
   ConfigAvailability availability_;
   ProxyConfig config_;
-  ObserverList<Observer, true> observers_;
+  base::ObserverList<Observer, true> observers_;
 };
 
 // A test network delegate that exercises the OnResolveProxy callback.
@@ -239,13 +240,80 @@ class TestProxyFallbackNetworkDelegate : public NetworkDelegateImpl {
   int proxy_fallback_net_error_;
 };
 
+using RequestMap =
+    std::map<GURL, scoped_refptr<MockAsyncProxyResolver::Request>>;
+
+// Given a list of requests |list| from a MockAsyncProxyResolver and a list of
+// target URLs |_urls|, asserts that the set of URLs of the requests appearing
+// in |list| is exactly the set of URLs in |_urls|, and produces a RequestMap in
+// |*map| containing the requests corresponding to those target |_urls|.
+//
+// Note that this function must return void to allow use of gtest's ASSERT_*
+// macros inside it.
+RequestMap GetRequestsForURLs(
+    const MockAsyncProxyResolver::RequestsList& requests,
+    const std::vector<GURL>& urls) {
+  RequestMap map;
+
+  for (const auto& it : requests)
+    map[it->url()] = it;
+
+  if (urls.size() != map.size()) {
+    ADD_FAILURE() << "map size (" << map.size() << ") != urls size ("
+                  << urls.size() << ")";
+    return map;
+  }
+  for (const auto& it : urls) {
+    if (map.count(it) != 1U) {
+      ADD_FAILURE() << "url not in map: " << it.spec();
+      break;
+    }
+  }
+  return map;
+}
+
+// Given a MockAsyncProxyResolver |resolver| and some GURLs, validates that the
+// set of pending request URLs for |resolver| is exactly the supplied list of
+// URLs and returns a map from URLs to the corresponding pending requests.
+RequestMap GetPendingRequestsForURLs(const MockAsyncProxyResolver& resolver,
+                                     const GURL& url1 = GURL(),
+                                     const GURL& url2 = GURL(),
+                                     const GURL& url3 = GURL()) {
+  std::vector<GURL> urls;
+  if (!url1.is_empty())
+    urls.push_back(url1);
+  if (!url2.is_empty())
+    urls.push_back(url2);
+  if (!url3.is_empty())
+    urls.push_back(url3);
+  return GetRequestsForURLs(resolver.pending_requests(), urls);
+}
+
+// Given a MockAsyncProxyResolver |resolver| and some GURLs, validates that the
+// set of cancelled request URLs for |resolver| is exactly the supplied list of
+// URLs and returns a map from URLs to the corresponding cancelled requests.
+RequestMap GetCancelledRequestsForURLs(const MockAsyncProxyResolver& resolver,
+                                       const GURL& url1 = GURL(),
+                                       const GURL& url2 = GURL(),
+                                       const GURL& url3 = GURL()) {
+  std::vector<GURL> urls;
+  if (!url1.is_empty())
+    urls.push_back(url1);
+  if (!url2.is_empty())
+    urls.push_back(url2);
+  if (!url3.is_empty())
+    urls.push_back(url3);
+  return GetRequestsForURLs(resolver.cancelled_requests(), urls);
+}
+
 }  // namespace
 
 TEST_F(ProxyServiceTest, Direct) {
-  MockAsyncProxyResolver resolver;
+  MockAsyncProxyResolverFactory* factory =
+      new MockAsyncProxyResolverFactory(false);
   ProxyService service(
-      new MockProxyConfigService(ProxyConfig::CreateDirect()),
-      make_scoped_ptr(new ForwardingProxyResolverFactory(&resolver)), NULL);
+      make_scoped_ptr(new MockProxyConfigService(ProxyConfig::CreateDirect())),
+      make_scoped_ptr(factory), NULL);
 
   GURL url("http://www.google.com/");
 
@@ -255,14 +323,14 @@ TEST_F(ProxyServiceTest, Direct) {
   int rv = service.ResolveProxy(url, LOAD_NORMAL, &info, callback.callback(),
                                 NULL, NULL, log.bound());
   EXPECT_EQ(OK, rv);
-  EXPECT_TRUE(resolver.pending_requests().empty());
+  EXPECT_TRUE(factory->pending_requests().empty());
 
   EXPECT_TRUE(info.is_direct());
   EXPECT_TRUE(info.proxy_resolve_start_time().is_null());
   EXPECT_TRUE(info.proxy_resolve_end_time().is_null());
 
   // Check the NetLog was filled correctly.
-  CapturedNetLogEntry::List entries;
+  TestNetLogEntry::List entries;
   log.GetEntries(&entries);
 
   EXPECT_EQ(3u, entries.size());
@@ -281,7 +349,8 @@ TEST_F(ProxyServiceTest, OnResolveProxyCallbackAddProxy) {
   config.set_auto_detect(false);
   config.proxy_rules().bypass_rules.ParseFromString("*.org");
 
-  ProxyService service(new MockProxyConfigService(config), nullptr, NULL);
+  ProxyService service(make_scoped_ptr(new MockProxyConfigService(config)),
+                       nullptr, NULL);
 
   GURL url("http://www.google.com/");
   GURL bypass_url("http://internet.org");
@@ -335,7 +404,8 @@ TEST_F(ProxyServiceTest, OnResolveProxyCallbackRemoveProxy) {
   config.set_auto_detect(false);
   config.proxy_rules().bypass_rules.ParseFromString("*.org");
 
-  ProxyService service(new MockProxyConfigService(config), nullptr, NULL);
+  ProxyService service(make_scoped_ptr(new MockProxyConfigService(config)),
+                       nullptr, NULL);
 
   GURL url("http://www.google.com/");
   GURL bypass_url("http://internet.org");
@@ -375,10 +445,11 @@ TEST_F(ProxyServiceTest, PAC) {
       new MockProxyConfigService("http://foopy/proxy.pac");
 
   MockAsyncProxyResolver resolver;
+  MockAsyncProxyResolverFactory* factory =
+      new MockAsyncProxyResolverFactory(false);
 
-  ProxyService service(
-      config_service,
-      make_scoped_ptr(new ForwardingProxyResolverFactory(&resolver)), NULL);
+  ProxyService service(make_scoped_ptr(config_service),
+                       make_scoped_ptr(factory), NULL);
 
   GURL url("http://www.google.com/");
 
@@ -393,9 +464,10 @@ TEST_F(ProxyServiceTest, PAC) {
 
   EXPECT_EQ(LOAD_STATE_RESOLVING_PROXY_FOR_URL, service.GetLoadState(request));
 
+  ASSERT_EQ(1u, factory->pending_requests().size());
   EXPECT_EQ(GURL("http://foopy/proxy.pac"),
-            resolver.pending_set_pac_script_request()->script_data()->url());
-  resolver.pending_set_pac_script_request()->CompleteNow(OK);
+            factory->pending_requests()[0]->script_data()->url());
+  factory->pending_requests()[0]->CompleteNowWithForwarder(OK, &resolver);
 
   ASSERT_EQ(1u, resolver.pending_requests().size());
   EXPECT_EQ(url, resolver.pending_requests()[0]->url());
@@ -414,7 +486,7 @@ TEST_F(ProxyServiceTest, PAC) {
   EXPECT_LE(info.proxy_resolve_start_time(), info.proxy_resolve_end_time());
 
   // Check the NetLog was filled correctly.
-  CapturedNetLogEntry::List entries;
+  TestNetLogEntry::List entries;
   log.GetEntries(&entries);
 
   EXPECT_EQ(5u, entries.size());
@@ -435,10 +507,11 @@ TEST_F(ProxyServiceTest, PAC_NoIdentityOrHash) {
       new MockProxyConfigService("http://foopy/proxy.pac");
 
   MockAsyncProxyResolver resolver;
+  MockAsyncProxyResolverFactory* factory =
+      new MockAsyncProxyResolverFactory(false);
 
-  ProxyService service(
-      config_service,
-      make_scoped_ptr(new ForwardingProxyResolverFactory(&resolver)), NULL);
+  ProxyService service(make_scoped_ptr(config_service),
+                       make_scoped_ptr(factory), NULL);
 
   GURL url("http://username:password@www.google.com/?ref#hash#hash");
 
@@ -449,8 +522,8 @@ TEST_F(ProxyServiceTest, PAC_NoIdentityOrHash) {
   EXPECT_EQ(ERR_IO_PENDING, rv);
 
   EXPECT_EQ(GURL("http://foopy/proxy.pac"),
-            resolver.pending_set_pac_script_request()->script_data()->url());
-  resolver.pending_set_pac_script_request()->CompleteNow(OK);
+            factory->pending_requests()[0]->script_data()->url());
+  factory->pending_requests()[0]->CompleteNowWithForwarder(OK, &resolver);
 
   ASSERT_EQ(1u, resolver.pending_requests().size());
   // The URL should have been simplified, stripping the username/password/hash.
@@ -465,10 +538,11 @@ TEST_F(ProxyServiceTest, PAC_FailoverWithoutDirect) {
   MockProxyConfigService* config_service =
       new MockProxyConfigService("http://foopy/proxy.pac");
   MockAsyncProxyResolver resolver;
+  MockAsyncProxyResolverFactory* factory =
+      new MockAsyncProxyResolverFactory(false);
 
-  ProxyService service(
-      config_service,
-      make_scoped_ptr(new ForwardingProxyResolverFactory(&resolver)), NULL);
+  ProxyService service(make_scoped_ptr(config_service),
+                       make_scoped_ptr(factory), NULL);
 
   GURL url("http://www.google.com/");
 
@@ -479,8 +553,8 @@ TEST_F(ProxyServiceTest, PAC_FailoverWithoutDirect) {
   EXPECT_EQ(ERR_IO_PENDING, rv);
 
   EXPECT_EQ(GURL("http://foopy/proxy.pac"),
-            resolver.pending_set_pac_script_request()->script_data()->url());
-  resolver.pending_set_pac_script_request()->CompleteNow(OK);
+            factory->pending_requests()[0]->script_data()->url());
+  factory->pending_requests()[0]->CompleteNowWithForwarder(OK, &resolver);
 
   ASSERT_EQ(1u, resolver.pending_requests().size());
   EXPECT_EQ(url, resolver.pending_requests()[0]->url());
@@ -518,10 +592,11 @@ TEST_F(ProxyServiceTest, PAC_RuntimeError) {
   MockProxyConfigService* config_service =
       new MockProxyConfigService("http://foopy/proxy.pac");
   MockAsyncProxyResolver resolver;
+  MockAsyncProxyResolverFactory* factory =
+      new MockAsyncProxyResolverFactory(false);
 
-  ProxyService service(
-      config_service,
-      make_scoped_ptr(new ForwardingProxyResolverFactory(&resolver)), NULL);
+  ProxyService service(make_scoped_ptr(config_service),
+                       make_scoped_ptr(factory), NULL);
 
   GURL url("http://this-causes-js-error/");
 
@@ -532,8 +607,8 @@ TEST_F(ProxyServiceTest, PAC_RuntimeError) {
   EXPECT_EQ(ERR_IO_PENDING, rv);
 
   EXPECT_EQ(GURL("http://foopy/proxy.pac"),
-            resolver.pending_set_pac_script_request()->script_data()->url());
-  resolver.pending_set_pac_script_request()->CompleteNow(OK);
+            factory->pending_requests()[0]->script_data()->url());
+  factory->pending_requests()[0]->CompleteNowWithForwarder(OK, &resolver);
 
   ASSERT_EQ(1u, resolver.pending_requests().size());
   EXPECT_EQ(url, resolver.pending_requests()[0]->url());
@@ -575,10 +650,11 @@ TEST_F(ProxyServiceTest, PAC_FailoverAfterDirect) {
   MockProxyConfigService* config_service =
       new MockProxyConfigService("http://foopy/proxy.pac");
   MockAsyncProxyResolver resolver;
+  MockAsyncProxyResolverFactory* factory =
+      new MockAsyncProxyResolverFactory(false);
 
-  ProxyService service(
-      config_service,
-      make_scoped_ptr(new ForwardingProxyResolverFactory(&resolver)), NULL);
+  ProxyService service(make_scoped_ptr(config_service),
+                       make_scoped_ptr(factory), NULL);
 
   GURL url("http://www.google.com/");
 
@@ -589,8 +665,8 @@ TEST_F(ProxyServiceTest, PAC_FailoverAfterDirect) {
   EXPECT_EQ(ERR_IO_PENDING, rv);
 
   EXPECT_EQ(GURL("http://foopy/proxy.pac"),
-            resolver.pending_set_pac_script_request()->script_data()->url());
-  resolver.pending_set_pac_script_request()->CompleteNow(OK);
+            factory->pending_requests()[0]->script_data()->url());
+  factory->pending_requests()[0]->CompleteNowWithForwarder(OK, &resolver);
 
   ASSERT_EQ(1u, resolver.pending_requests().size());
   EXPECT_EQ(url, resolver.pending_requests()[0]->url());
@@ -651,9 +727,10 @@ TEST_F(ProxyServiceTest, PAC_ConfigSourcePropagates) {
 
   MockProxyConfigService* config_service = new MockProxyConfigService(config);
   MockAsyncProxyResolver resolver;
-  ProxyService service(
-      config_service,
-      make_scoped_ptr(new ForwardingProxyResolverFactory(&resolver)), NULL);
+  MockAsyncProxyResolverFactory* factory =
+      new MockAsyncProxyResolverFactory(false);
+  ProxyService service(make_scoped_ptr(config_service),
+                       make_scoped_ptr(factory), NULL);
 
   // Resolve something.
   GURL url("http://www.google.com/");
@@ -662,7 +739,7 @@ TEST_F(ProxyServiceTest, PAC_ConfigSourcePropagates) {
   int rv = service.ResolveProxy(url, LOAD_NORMAL, &info, callback.callback(),
                                 NULL, NULL, BoundNetLog());
   ASSERT_EQ(ERR_IO_PENDING, rv);
-  resolver.pending_set_pac_script_request()->CompleteNow(OK);
+  factory->pending_requests()[0]->CompleteNowWithForwarder(OK, &resolver);
   ASSERT_EQ(1u, resolver.pending_requests().size());
 
   // Set the result in proxy resolver.
@@ -687,10 +764,11 @@ TEST_F(ProxyServiceTest, ProxyResolverFails) {
       new MockProxyConfigService("http://foopy/proxy.pac");
 
   MockAsyncProxyResolver resolver;
+  MockAsyncProxyResolverFactory* factory =
+      new MockAsyncProxyResolverFactory(false);
 
-  ProxyService service(
-      config_service,
-      make_scoped_ptr(new ForwardingProxyResolverFactory(&resolver)), NULL);
+  ProxyService service(make_scoped_ptr(config_service),
+                       make_scoped_ptr(factory), NULL);
 
   // Start first resolve request.
   GURL url("http://www.google.com/");
@@ -701,8 +779,8 @@ TEST_F(ProxyServiceTest, ProxyResolverFails) {
   EXPECT_EQ(ERR_IO_PENDING, rv);
 
   EXPECT_EQ(GURL("http://foopy/proxy.pac"),
-            resolver.pending_set_pac_script_request()->script_data()->url());
-  resolver.pending_set_pac_script_request()->CompleteNow(OK);
+            factory->pending_requests()[0]->script_data()->url());
+  factory->pending_requests()[0]->CompleteNowWithForwarder(OK, &resolver);
 
   ASSERT_EQ(1u, resolver.pending_requests().size());
   EXPECT_EQ(url, resolver.pending_requests()[0]->url());
@@ -748,10 +826,11 @@ TEST_F(ProxyServiceTest, ProxyResolverTerminatedDuringRequest) {
       new MockProxyConfigService("http://foopy/proxy.pac");
 
   MockAsyncProxyResolver resolver;
+  MockAsyncProxyResolverFactory* factory =
+      new MockAsyncProxyResolverFactory(false);
 
-  ProxyService service(
-      config_service,
-      make_scoped_ptr(new ForwardingProxyResolverFactory(&resolver)), nullptr);
+  ProxyService service(make_scoped_ptr(config_service),
+                       make_scoped_ptr(factory), nullptr);
 
   // Start first resolve request.
   GURL url("http://www.google.com/");
@@ -762,10 +841,10 @@ TEST_F(ProxyServiceTest, ProxyResolverTerminatedDuringRequest) {
                            nullptr, nullptr, BoundNetLog());
   EXPECT_EQ(ERR_IO_PENDING, rv);
 
-  ASSERT_TRUE(resolver.pending_set_pac_script_request());
+  ASSERT_EQ(1u, factory->pending_requests().size());
   EXPECT_EQ(GURL("http://foopy/proxy.pac"),
-            resolver.pending_set_pac_script_request()->script_data()->url());
-  resolver.pending_set_pac_script_request()->CompleteNow(OK);
+            factory->pending_requests()[0]->script_data()->url());
+  factory->pending_requests()[0]->CompleteNowWithForwarder(OK, &resolver);
 
   ASSERT_EQ(1u, resolver.pending_requests().size());
   EXPECT_EQ(url, resolver.pending_requests()[0]->url());
@@ -785,17 +864,17 @@ TEST_F(ProxyServiceTest, ProxyResolverTerminatedDuringRequest) {
 
   // With no other requests, the ProxyService waits for a new request before
   // initializing a new ProxyResolver.
-  EXPECT_FALSE(resolver.pending_set_pac_script_request());
+  EXPECT_TRUE(factory->pending_requests().empty());
 
   TestCompletionCallback callback2;
   rv = service.ResolveProxy(url, net::LOAD_NORMAL, &info, callback2.callback(),
                             nullptr, nullptr, BoundNetLog());
   EXPECT_EQ(ERR_IO_PENDING, rv);
 
-  ASSERT_TRUE(resolver.pending_set_pac_script_request());
+  ASSERT_EQ(1u, factory->pending_requests().size());
   EXPECT_EQ(GURL("http://foopy/proxy.pac"),
-            resolver.pending_set_pac_script_request()->script_data()->url());
-  resolver.pending_set_pac_script_request()->CompleteNow(OK);
+            factory->pending_requests()[0]->script_data()->url());
+  factory->pending_requests()[0]->CompleteNowWithForwarder(OK, &resolver);
 
   ASSERT_EQ(1u, resolver.pending_requests().size());
   EXPECT_EQ(url, resolver.pending_requests()[0]->url());
@@ -818,10 +897,11 @@ TEST_F(ProxyServiceTest,
       new MockProxyConfigService("http://foopy/proxy.pac");
 
   MockAsyncProxyResolver resolver;
+  MockAsyncProxyResolverFactory* factory =
+      new MockAsyncProxyResolverFactory(false);
 
-  ProxyService service(
-      config_service,
-      make_scoped_ptr(new ForwardingProxyResolverFactory(&resolver)), nullptr);
+  ProxyService service(make_scoped_ptr(config_service),
+                       make_scoped_ptr(factory), nullptr);
 
   // Start two resolve requests.
   GURL url1("http://www.google.com/");
@@ -837,17 +917,15 @@ TEST_F(ProxyServiceTest,
                             nullptr, nullptr, BoundNetLog());
   EXPECT_EQ(ERR_IO_PENDING, rv);
 
-  ASSERT_TRUE(resolver.pending_set_pac_script_request());
+  ASSERT_EQ(1u, factory->pending_requests().size());
   EXPECT_EQ(GURL("http://foopy/proxy.pac"),
-            resolver.pending_set_pac_script_request()->script_data()->url());
-  resolver.pending_set_pac_script_request()->CompleteNow(OK);
+            factory->pending_requests()[0]->script_data()->url());
+  factory->pending_requests()[0]->CompleteNowWithForwarder(OK, &resolver);
 
-  ASSERT_EQ(2u, resolver.pending_requests().size());
-  EXPECT_EQ(url1, resolver.pending_requests()[0]->url());
-  EXPECT_EQ(url2, resolver.pending_requests()[1]->url());
+  RequestMap requests = GetPendingRequestsForURLs(resolver, url1, url2);
 
   // Fail the first resolve request in MockAsyncProxyResolver.
-  resolver.pending_requests()[0]->CompleteNow(ERR_PAC_SCRIPT_TERMINATED);
+  requests[url1]->CompleteNow(ERR_PAC_SCRIPT_TERMINATED);
 
   // Although the proxy resolver failed the request, ProxyService implicitly
   // falls-back to DIRECT.
@@ -860,22 +938,20 @@ TEST_F(ProxyServiceTest,
   EXPECT_LE(info.proxy_resolve_start_time(), info.proxy_resolve_end_time());
 
   // The second request is cancelled when the proxy resolver terminates.
-  ASSERT_EQ(1u, resolver.cancelled_requests().size());
-  EXPECT_EQ(url2, resolver.cancelled_requests()[0]->url());
+  requests = GetCancelledRequestsForURLs(resolver, url2);
 
   // Since a second request was in progress, the ProxyService starts
   // initializating a new ProxyResolver.
-  ASSERT_TRUE(resolver.pending_set_pac_script_request());
+  ASSERT_EQ(1u, factory->pending_requests().size());
   EXPECT_EQ(GURL("http://foopy/proxy.pac"),
-            resolver.pending_set_pac_script_request()->script_data()->url());
-  resolver.pending_set_pac_script_request()->CompleteNow(OK);
+            factory->pending_requests()[0]->script_data()->url());
+  factory->pending_requests()[0]->CompleteNowWithForwarder(OK, &resolver);
 
-  ASSERT_EQ(1u, resolver.pending_requests().size());
-  EXPECT_EQ(url2, resolver.pending_requests()[0]->url());
+  requests = GetPendingRequestsForURLs(resolver, url2);
 
   // This request succeeds.
-  resolver.pending_requests()[0]->results()->UseNamedProxy("foopy_valid:8080");
-  resolver.pending_requests()[0]->CompleteNow(OK);
+  requests[url2]->results()->UseNamedProxy("foopy_valid:8080");
+  requests[url2]->CompleteNow(OK);
 
   EXPECT_EQ(OK, callback2.WaitForResult());
   EXPECT_FALSE(info.is_direct());
@@ -892,11 +968,11 @@ TEST_F(ProxyServiceTest, ProxyScriptFetcherFailsDownloadingMandatoryPac) {
 
   MockProxyConfigService* config_service = new MockProxyConfigService(config);
 
-  MockAsyncProxyResolver resolver;
+  MockAsyncProxyResolverFactory* factory =
+      new MockAsyncProxyResolverFactory(false);
 
-  ProxyService service(
-      config_service,
-      make_scoped_ptr(new ForwardingProxyResolverFactory(&resolver)), NULL);
+  ProxyService service(make_scoped_ptr(config_service),
+                       make_scoped_ptr(factory), NULL);
 
   // Start first resolve request.
   GURL url("http://www.google.com/");
@@ -907,18 +983,18 @@ TEST_F(ProxyServiceTest, ProxyScriptFetcherFailsDownloadingMandatoryPac) {
   EXPECT_EQ(ERR_IO_PENDING, rv);
 
   EXPECT_EQ(GURL("http://foopy/proxy.pac"),
-            resolver.pending_set_pac_script_request()->script_data()->url());
-  resolver.pending_set_pac_script_request()->CompleteNow(ERR_FAILED);
+            factory->pending_requests()[0]->script_data()->url());
+  factory->pending_requests()[0]->CompleteNow(ERR_FAILED, nullptr);
 
-  ASSERT_EQ(0u, resolver.pending_requests().size());
-  // As the proxy resolver failed the request and is configured for a mandatory
-  // PAC script, ProxyService must not implicitly fall-back to DIRECT.
+  ASSERT_EQ(0u, factory->pending_requests().size());
+  // As the proxy resolver factory failed the request and is configured for a
+  // mandatory PAC script, ProxyService must not implicitly fall-back to DIRECT.
   EXPECT_EQ(ERR_MANDATORY_PROXY_CONFIGURATION_FAILED,
             callback1.WaitForResult());
   EXPECT_FALSE(info.is_direct());
 
-  // As the proxy resolver failed the request and is configured for a mandatory
-  // PAC script, ProxyService must not implicitly fall-back to DIRECT.
+  // As the proxy resolver factory failed the request and is configured for a
+  // mandatory PAC script, ProxyService must not implicitly fall-back to DIRECT.
   TestCompletionCallback callback2;
   rv = service.ResolveProxy(url, LOAD_NORMAL, &info, callback2.callback(), NULL,
                             NULL, BoundNetLog());
@@ -937,15 +1013,15 @@ TEST_F(ProxyServiceTest, ProxyResolverFailsParsingJavaScriptMandatoryPac) {
 
   MockProxyConfigService* config_service = new MockProxyConfigService(config);
 
-  MockAsyncProxyResolverExpectsBytes resolver;
+  MockAsyncProxyResolverFactory* factory =
+      new MockAsyncProxyResolverFactory(true);
 
-  ProxyService service(
-      config_service,
-      make_scoped_ptr(new ForwardingProxyResolverFactory(&resolver)), NULL);
+  ProxyService service(make_scoped_ptr(config_service),
+                       make_scoped_ptr(factory), NULL);
 
   MockProxyScriptFetcher* fetcher = new MockProxyScriptFetcher;
-  DhcpProxyScriptFetcher* dhcp_fetcher = new DoNothingDhcpProxyScriptFetcher();
-  service.SetProxyScriptFetchers(fetcher, dhcp_fetcher);
+  service.SetProxyScriptFetchers(
+      fetcher, make_scoped_ptr(new DoNothingDhcpProxyScriptFetcher()));
 
   // Start resolve request.
   GURL url("http://www.google.com/");
@@ -955,8 +1031,8 @@ TEST_F(ProxyServiceTest, ProxyResolverFailsParsingJavaScriptMandatoryPac) {
                                 NULL, NULL, BoundNetLog());
   EXPECT_EQ(ERR_IO_PENDING, rv);
 
-  // Check that nothing has been sent to the proxy resolver yet.
-  ASSERT_EQ(0u, resolver.pending_requests().size());
+  // Check that nothing has been sent to the proxy resolver factory yet.
+  ASSERT_EQ(0u, factory->pending_requests().size());
 
   // Downloading the PAC script succeeds.
   EXPECT_TRUE(fetcher->has_pending_request());
@@ -964,7 +1040,7 @@ TEST_F(ProxyServiceTest, ProxyResolverFailsParsingJavaScriptMandatoryPac) {
   fetcher->NotifyFetchCompletion(OK, "invalid-script-contents");
 
   EXPECT_FALSE(fetcher->has_pending_request());
-  ASSERT_EQ(0u, resolver.pending_requests().size());
+  ASSERT_EQ(0u, factory->pending_requests().size());
 
   // Since ProxyScriptDecider failed to identify a valid PAC and PAC was
   // mandatory for this configuration, the ProxyService must not implicitly
@@ -987,10 +1063,11 @@ TEST_F(ProxyServiceTest, ProxyResolverFailsInJavaScriptMandatoryPac) {
   MockProxyConfigService* config_service = new MockProxyConfigService(config);
 
   MockAsyncProxyResolver resolver;
+  MockAsyncProxyResolverFactory* factory =
+      new MockAsyncProxyResolverFactory(false);
 
-  ProxyService service(
-      config_service,
-      make_scoped_ptr(new ForwardingProxyResolverFactory(&resolver)), NULL);
+  ProxyService service(make_scoped_ptr(config_service),
+                       make_scoped_ptr(factory), NULL);
 
   // Start first resolve request.
   GURL url("http://www.google.com/");
@@ -1001,8 +1078,8 @@ TEST_F(ProxyServiceTest, ProxyResolverFailsInJavaScriptMandatoryPac) {
   EXPECT_EQ(ERR_IO_PENDING, rv);
 
   EXPECT_EQ(GURL("http://foopy/proxy.pac"),
-            resolver.pending_set_pac_script_request()->script_data()->url());
-  resolver.pending_set_pac_script_request()->CompleteNow(OK);
+            factory->pending_requests()[0]->script_data()->url());
+  factory->pending_requests()[0]->CompleteNowWithForwarder(OK, &resolver);
 
   ASSERT_EQ(1u, resolver.pending_requests().size());
   EXPECT_EQ(url, resolver.pending_requests()[0]->url());
@@ -1044,10 +1121,11 @@ TEST_F(ProxyServiceTest, ProxyFallback) {
       new MockProxyConfigService("http://foopy/proxy.pac");
 
   MockAsyncProxyResolver resolver;
+  MockAsyncProxyResolverFactory* factory =
+      new MockAsyncProxyResolverFactory(false);
 
-  ProxyService service(
-      config_service,
-      make_scoped_ptr(new ForwardingProxyResolverFactory(&resolver)), NULL);
+  ProxyService service(make_scoped_ptr(config_service),
+                       make_scoped_ptr(factory), NULL);
 
   GURL url("http://www.google.com/");
 
@@ -1059,8 +1137,8 @@ TEST_F(ProxyServiceTest, ProxyFallback) {
   EXPECT_EQ(ERR_IO_PENDING, rv);
 
   EXPECT_EQ(GURL("http://foopy/proxy.pac"),
-            resolver.pending_set_pac_script_request()->script_data()->url());
-  resolver.pending_set_pac_script_request()->CompleteNow(OK);
+            factory->pending_requests()[0]->script_data()->url());
+  factory->pending_requests()[0]->CompleteNowWithForwarder(OK, &resolver);
 
   ASSERT_EQ(1u, resolver.pending_requests().size());
   EXPECT_EQ(url, resolver.pending_requests()[0]->url());
@@ -1193,10 +1271,11 @@ TEST_F(ProxyServiceTest, ProxyFallbackToDirect) {
       new MockProxyConfigService("http://foopy/proxy.pac");
 
   MockAsyncProxyResolver resolver;
+  MockAsyncProxyResolverFactory* factory =
+      new MockAsyncProxyResolverFactory(false);
 
-  ProxyService service(
-      config_service,
-      make_scoped_ptr(new ForwardingProxyResolverFactory(&resolver)), NULL);
+  ProxyService service(make_scoped_ptr(config_service),
+                       make_scoped_ptr(factory), NULL);
 
   GURL url("http://www.google.com/");
 
@@ -1208,8 +1287,8 @@ TEST_F(ProxyServiceTest, ProxyFallbackToDirect) {
   EXPECT_EQ(ERR_IO_PENDING, rv);
 
   EXPECT_EQ(GURL("http://foopy/proxy.pac"),
-            resolver.pending_set_pac_script_request()->script_data()->url());
-  resolver.pending_set_pac_script_request()->CompleteNow(OK);
+            factory->pending_requests()[0]->script_data()->url());
+  factory->pending_requests()[0]->CompleteNowWithForwarder(OK, &resolver);
 
   ASSERT_EQ(1u, resolver.pending_requests().size());
   EXPECT_EQ(url, resolver.pending_requests()[0]->url());
@@ -1265,10 +1344,11 @@ TEST_F(ProxyServiceTest, ProxyFallback_NewSettings) {
       new MockProxyConfigService("http://foopy/proxy.pac");
 
   MockAsyncProxyResolver resolver;
+  MockAsyncProxyResolverFactory* factory =
+      new MockAsyncProxyResolverFactory(false);
 
-  ProxyService service(
-      config_service,
-      make_scoped_ptr(new ForwardingProxyResolverFactory(&resolver)), NULL);
+  ProxyService service(make_scoped_ptr(config_service),
+                       make_scoped_ptr(factory), NULL);
 
   GURL url("http://www.google.com/");
 
@@ -1280,8 +1360,8 @@ TEST_F(ProxyServiceTest, ProxyFallback_NewSettings) {
   EXPECT_EQ(ERR_IO_PENDING, rv);
 
   EXPECT_EQ(GURL("http://foopy/proxy.pac"),
-            resolver.pending_set_pac_script_request()->script_data()->url());
-  resolver.pending_set_pac_script_request()->CompleteNow(OK);
+            factory->pending_requests()[0]->script_data()->url());
+  factory->pending_requests()[0]->CompleteNowWithForwarder(OK, &resolver);
 
   ASSERT_EQ(1u, resolver.pending_requests().size());
   EXPECT_EQ(url, resolver.pending_requests()[0]->url());
@@ -1307,8 +1387,8 @@ TEST_F(ProxyServiceTest, ProxyFallback_NewSettings) {
   EXPECT_EQ(ERR_IO_PENDING, rv);
 
   EXPECT_EQ(GURL("http://foopy-new/proxy.pac"),
-            resolver.pending_set_pac_script_request()->script_data()->url());
-  resolver.pending_set_pac_script_request()->CompleteNow(OK);
+            factory->pending_requests()[0]->script_data()->url());
+  factory->pending_requests()[0]->CompleteNowWithForwarder(OK, &resolver);
 
   ASSERT_EQ(1u, resolver.pending_requests().size());
   EXPECT_EQ(url, resolver.pending_requests()[0]->url());
@@ -1342,8 +1422,8 @@ TEST_F(ProxyServiceTest, ProxyFallback_NewSettings) {
   EXPECT_EQ(ERR_IO_PENDING, rv);
 
   EXPECT_EQ(GURL("http://foopy-new2/proxy.pac"),
-            resolver.pending_set_pac_script_request()->script_data()->url());
-  resolver.pending_set_pac_script_request()->CompleteNow(OK);
+            factory->pending_requests()[0]->script_data()->url());
+  factory->pending_requests()[0]->CompleteNowWithForwarder(OK, &resolver);
 
   ASSERT_EQ(1u, resolver.pending_requests().size());
   EXPECT_EQ(url, resolver.pending_requests()[0]->url());
@@ -1367,10 +1447,11 @@ TEST_F(ProxyServiceTest, ProxyFallback_BadConfig) {
       new MockProxyConfigService("http://foopy/proxy.pac");
 
   MockAsyncProxyResolver resolver;
+  MockAsyncProxyResolverFactory* factory =
+      new MockAsyncProxyResolverFactory(false);
 
-  ProxyService service(
-      config_service,
-      make_scoped_ptr(new ForwardingProxyResolverFactory(&resolver)), NULL);
+  ProxyService service(make_scoped_ptr(config_service),
+                       make_scoped_ptr(factory), NULL);
 
   GURL url("http://www.google.com/");
 
@@ -1382,8 +1463,8 @@ TEST_F(ProxyServiceTest, ProxyFallback_BadConfig) {
   EXPECT_EQ(ERR_IO_PENDING, rv);
 
   EXPECT_EQ(GURL("http://foopy/proxy.pac"),
-            resolver.pending_set_pac_script_request()->script_data()->url());
-  resolver.pending_set_pac_script_request()->CompleteNow(OK);
+            factory->pending_requests()[0]->script_data()->url());
+  factory->pending_requests()[0]->CompleteNowWithForwarder(OK, &resolver);
   ASSERT_EQ(1u, resolver.pending_requests().size());
   EXPECT_EQ(url, resolver.pending_requests()[0]->url());
 
@@ -1464,10 +1545,11 @@ TEST_F(ProxyServiceTest, ProxyFallback_BadConfigMandatory) {
   MockProxyConfigService* config_service = new MockProxyConfigService(config);
 
   MockAsyncProxyResolver resolver;
+  MockAsyncProxyResolverFactory* factory =
+      new MockAsyncProxyResolverFactory(false);
 
-  ProxyService service(
-      config_service,
-      make_scoped_ptr(new ForwardingProxyResolverFactory(&resolver)), NULL);
+  ProxyService service(make_scoped_ptr(config_service),
+                       make_scoped_ptr(factory), NULL);
 
   GURL url("http://www.google.com/");
 
@@ -1479,8 +1561,8 @@ TEST_F(ProxyServiceTest, ProxyFallback_BadConfigMandatory) {
   EXPECT_EQ(ERR_IO_PENDING, rv);
 
   EXPECT_EQ(GURL("http://foopy/proxy.pac"),
-            resolver.pending_set_pac_script_request()->script_data()->url());
-  resolver.pending_set_pac_script_request()->CompleteNow(OK);
+            factory->pending_requests()[0]->script_data()->url());
+  factory->pending_requests()[0]->CompleteNowWithForwarder(OK, &resolver);
   ASSERT_EQ(1u, resolver.pending_requests().size());
   EXPECT_EQ(url, resolver.pending_requests()[0]->url());
 
@@ -1558,7 +1640,8 @@ TEST_F(ProxyServiceTest, ProxyBypassList) {
   config.set_auto_detect(false);
   config.proxy_rules().bypass_rules.ParseFromString("*.org");
 
-  ProxyService service(new MockProxyConfigService(config), nullptr, NULL);
+  ProxyService service(make_scoped_ptr(new MockProxyConfigService(config)),
+                       nullptr, NULL);
 
   int rv;
   GURL url1("http://www.webkit.org");
@@ -1577,13 +1660,48 @@ TEST_F(ProxyServiceTest, ProxyBypassList) {
   EXPECT_EQ("foopy1:8080", info[1].proxy_server().ToURI());
 }
 
+TEST_F(ProxyServiceTest, MarkProxiesAsBadTests) {
+  ProxyConfig config;
+  config.proxy_rules().ParseFromString(
+      "http=foopy1:8080;http=foopy2:8080;http=foopy3.8080;http=foopy4:8080");
+  config.set_auto_detect(false);
+
+  ProxyList proxy_list;
+  std::vector<ProxyServer> additional_bad_proxies;
+  for (const ProxyServer& proxy_server :
+       config.proxy_rules().proxies_for_http.GetAll()) {
+    proxy_list.AddProxyServer(proxy_server);
+    if (proxy_server == config.proxy_rules().proxies_for_http.Get())
+      continue;
+
+    additional_bad_proxies.push_back(proxy_server);
+  }
+
+  EXPECT_EQ(3u, additional_bad_proxies.size());
+
+  ProxyService service(make_scoped_ptr(new MockProxyConfigService(config)),
+                       nullptr, NULL);
+  ProxyInfo proxy_info;
+  proxy_info.UseProxyList(proxy_list);
+  const ProxyRetryInfoMap& retry_info = service.proxy_retry_info();
+  service.MarkProxiesAsBadUntil(proxy_info, base::TimeDelta::FromSeconds(1),
+                                additional_bad_proxies, BoundNetLog());
+  ASSERT_EQ(4u, retry_info.size());
+  for (const ProxyServer& proxy_server :
+       config.proxy_rules().proxies_for_http.GetAll()) {
+    ProxyRetryInfoMap::const_iterator i =
+        retry_info.find(proxy_server.host_port_pair().ToString());
+    ASSERT_TRUE(i != retry_info.end());
+  }
+}
 
 TEST_F(ProxyServiceTest, PerProtocolProxyTests) {
   ProxyConfig config;
   config.proxy_rules().ParseFromString("http=foopy1:8080;https=foopy2:8080");
   config.set_auto_detect(false);
   {
-    ProxyService service(new MockProxyConfigService(config), nullptr, NULL);
+    ProxyService service(make_scoped_ptr(new MockProxyConfigService(config)),
+                         nullptr, NULL);
     GURL test_url("http://www.msn.com");
     ProxyInfo info;
     TestCompletionCallback callback;
@@ -1595,7 +1713,8 @@ TEST_F(ProxyServiceTest, PerProtocolProxyTests) {
     EXPECT_EQ("foopy1:8080", info.proxy_server().ToURI());
   }
   {
-    ProxyService service(new MockProxyConfigService(config), nullptr, NULL);
+    ProxyService service(make_scoped_ptr(new MockProxyConfigService(config)),
+                         nullptr, NULL);
     GURL test_url("ftp://ftp.google.com");
     ProxyInfo info;
     TestCompletionCallback callback;
@@ -1607,7 +1726,8 @@ TEST_F(ProxyServiceTest, PerProtocolProxyTests) {
     EXPECT_EQ("direct://", info.proxy_server().ToURI());
   }
   {
-    ProxyService service(new MockProxyConfigService(config), nullptr, NULL);
+    ProxyService service(make_scoped_ptr(new MockProxyConfigService(config)),
+                         nullptr, NULL);
     GURL test_url("https://webbranch.techcu.com");
     ProxyInfo info;
     TestCompletionCallback callback;
@@ -1620,7 +1740,8 @@ TEST_F(ProxyServiceTest, PerProtocolProxyTests) {
   }
   {
     config.proxy_rules().ParseFromString("foopy1:8080");
-    ProxyService service(new MockProxyConfigService(config), nullptr, NULL);
+    ProxyService service(make_scoped_ptr(new MockProxyConfigService(config)),
+                         nullptr, NULL);
     GURL test_url("http://www.microsoft.com");
     ProxyInfo info;
     TestCompletionCallback callback;
@@ -1641,7 +1762,8 @@ TEST_F(ProxyServiceTest, ProxyConfigSourcePropagates) {
     ProxyConfig config;
     config.set_source(PROXY_CONFIG_SOURCE_TEST);
     config.proxy_rules().ParseFromString("https=foopy2:8080");
-    ProxyService service(new MockProxyConfigService(config), nullptr, NULL);
+    ProxyService service(make_scoped_ptr(new MockProxyConfigService(config)),
+                         nullptr, NULL);
     GURL test_url("http://www.google.com");
     ProxyInfo info;
     TestCompletionCallback callback;
@@ -1656,7 +1778,8 @@ TEST_F(ProxyServiceTest, ProxyConfigSourcePropagates) {
     ProxyConfig config;
     config.set_source(PROXY_CONFIG_SOURCE_TEST);
     config.proxy_rules().ParseFromString("https=foopy2:8080");
-    ProxyService service(new MockProxyConfigService(config), nullptr, NULL);
+    ProxyService service(make_scoped_ptr(new MockProxyConfigService(config)),
+                         nullptr, NULL);
     GURL test_url("https://www.google.com");
     ProxyInfo info;
     TestCompletionCallback callback;
@@ -1670,7 +1793,8 @@ TEST_F(ProxyServiceTest, ProxyConfigSourcePropagates) {
   {
     ProxyConfig config;
     config.set_source(PROXY_CONFIG_SOURCE_TEST);
-    ProxyService service(new MockProxyConfigService(config), nullptr, NULL);
+    ProxyService service(make_scoped_ptr(new MockProxyConfigService(config)),
+                         nullptr, NULL);
     GURL test_url("http://www.google.com");
     ProxyInfo info;
     TestCompletionCallback callback;
@@ -1693,7 +1817,8 @@ TEST_F(ProxyServiceTest, DefaultProxyFallbackToSOCKS) {
             config.proxy_rules().type);
 
   {
-    ProxyService service(new MockProxyConfigService(config), nullptr, NULL);
+    ProxyService service(make_scoped_ptr(new MockProxyConfigService(config)),
+                         nullptr, NULL);
     GURL test_url("http://www.msn.com");
     ProxyInfo info;
     TestCompletionCallback callback;
@@ -1705,7 +1830,8 @@ TEST_F(ProxyServiceTest, DefaultProxyFallbackToSOCKS) {
     EXPECT_EQ("foopy1:8080", info.proxy_server().ToURI());
   }
   {
-    ProxyService service(new MockProxyConfigService(config), nullptr, NULL);
+    ProxyService service(make_scoped_ptr(new MockProxyConfigService(config)),
+                         nullptr, NULL);
     GURL test_url("ftp://ftp.google.com");
     ProxyInfo info;
     TestCompletionCallback callback;
@@ -1717,7 +1843,8 @@ TEST_F(ProxyServiceTest, DefaultProxyFallbackToSOCKS) {
     EXPECT_EQ("socks4://foopy2:1080", info.proxy_server().ToURI());
   }
   {
-    ProxyService service(new MockProxyConfigService(config), nullptr, NULL);
+    ProxyService service(make_scoped_ptr(new MockProxyConfigService(config)),
+                         nullptr, NULL);
     GURL test_url("https://webbranch.techcu.com");
     ProxyInfo info;
     TestCompletionCallback callback;
@@ -1729,7 +1856,8 @@ TEST_F(ProxyServiceTest, DefaultProxyFallbackToSOCKS) {
     EXPECT_EQ("socks4://foopy2:1080", info.proxy_server().ToURI());
   }
   {
-    ProxyService service(new MockProxyConfigService(config), nullptr, NULL);
+    ProxyService service(make_scoped_ptr(new MockProxyConfigService(config)),
+                         nullptr, NULL);
     GURL test_url("unknown://www.microsoft.com");
     ProxyInfo info;
     TestCompletionCallback callback;
@@ -1744,76 +1872,69 @@ TEST_F(ProxyServiceTest, DefaultProxyFallbackToSOCKS) {
 
 // Test cancellation of an in-progress request.
 TEST_F(ProxyServiceTest, CancelInProgressRequest) {
+  const GURL url1("http://request1");
+  const GURL url2("http://request2");
+  const GURL url3("http://request3");
   MockProxyConfigService* config_service =
       new MockProxyConfigService("http://foopy/proxy.pac");
 
   MockAsyncProxyResolver resolver;
+  MockAsyncProxyResolverFactory* factory =
+      new MockAsyncProxyResolverFactory(false);
 
-  ProxyService service(
-      config_service,
-      make_scoped_ptr(new ForwardingProxyResolverFactory(&resolver)), NULL);
+  ProxyService service(make_scoped_ptr(config_service),
+                       make_scoped_ptr(factory), NULL);
 
   // Start 3 requests.
 
   ProxyInfo info1;
   TestCompletionCallback callback1;
-  int rv =
-      service.ResolveProxy(GURL("http://request1"), LOAD_NORMAL, &info1,
-                           callback1.callback(), NULL, NULL, BoundNetLog());
+  int rv = service.ResolveProxy(url1, LOAD_NORMAL, &info1, callback1.callback(),
+                                NULL, NULL, BoundNetLog());
   EXPECT_EQ(ERR_IO_PENDING, rv);
-
-  // Nothing has been sent to the proxy resolver yet, since the proxy
-  // resolver has not been configured yet.
-  ASSERT_EQ(0u, resolver.pending_requests().size());
 
   // Successfully initialize the PAC script.
   EXPECT_EQ(GURL("http://foopy/proxy.pac"),
-            resolver.pending_set_pac_script_request()->script_data()->url());
-  resolver.pending_set_pac_script_request()->CompleteNow(OK);
+            factory->pending_requests()[0]->script_data()->url());
+  factory->pending_requests()[0]->CompleteNowWithForwarder(OK, &resolver);
 
-  ASSERT_EQ(1u, resolver.pending_requests().size());
-  EXPECT_EQ(GURL("http://request1"), resolver.pending_requests()[0]->url());
+  GetPendingRequestsForURLs(resolver, url1);
 
   ProxyInfo info2;
   TestCompletionCallback callback2;
   ProxyService::PacRequest* request2;
-  rv = service.ResolveProxy(GURL("http://request2"), LOAD_NORMAL, &info2,
-                            callback2.callback(), &request2, NULL,
-                            BoundNetLog());
+  rv = service.ResolveProxy(url2, LOAD_NORMAL, &info2, callback2.callback(),
+                            &request2, NULL, BoundNetLog());
   EXPECT_EQ(ERR_IO_PENDING, rv);
-  ASSERT_EQ(2u, resolver.pending_requests().size());
-  EXPECT_EQ(GURL("http://request2"), resolver.pending_requests()[1]->url());
+
+  GetPendingRequestsForURLs(resolver, url1, url2);
 
   ProxyInfo info3;
   TestCompletionCallback callback3;
-  rv = service.ResolveProxy(GURL("http://request3"), LOAD_NORMAL, &info3,
-                            callback3.callback(), NULL, NULL, BoundNetLog());
+  rv = service.ResolveProxy(url3, LOAD_NORMAL, &info3, callback3.callback(),
+                            NULL, NULL, BoundNetLog());
   EXPECT_EQ(ERR_IO_PENDING, rv);
-  ASSERT_EQ(3u, resolver.pending_requests().size());
-  EXPECT_EQ(GURL("http://request3"), resolver.pending_requests()[2]->url());
+  GetPendingRequestsForURLs(resolver, url1, url2, url3);
 
   // Cancel the second request
   service.CancelPacRequest(request2);
 
-  ASSERT_EQ(2u, resolver.pending_requests().size());
-  EXPECT_EQ(GURL("http://request1"), resolver.pending_requests()[0]->url());
-  EXPECT_EQ(GURL("http://request3"), resolver.pending_requests()[1]->url());
+  RequestMap requests = GetPendingRequestsForURLs(resolver, url1, url3);
 
   // Complete the two un-cancelled requests.
   // We complete the last one first, just to mix it up a bit.
-  resolver.pending_requests()[1]->results()->UseNamedProxy("request3:80");
-  resolver.pending_requests()[1]->CompleteNow(OK);
+  requests[url3]->results()->UseNamedProxy("request3:80");
+  requests[url3]->CompleteNow(OK);
 
-  resolver.pending_requests()[0]->results()->UseNamedProxy("request1:80");
-  resolver.pending_requests()[0]->CompleteNow(OK);
+  requests[url1]->results()->UseNamedProxy("request1:80");
+  requests[url1]->CompleteNow(OK);
 
   // Complete and verify that requests ran as expected.
   EXPECT_EQ(OK, callback1.WaitForResult());
   EXPECT_EQ("request1:80", info1.proxy_server().ToURI());
 
   EXPECT_FALSE(callback2.have_result());  // Cancelled.
-  ASSERT_EQ(1u, resolver.cancelled_requests().size());
-  EXPECT_EQ(GURL("http://request2"), resolver.cancelled_requests()[0]->url());
+  GetCancelledRequestsForURLs(resolver, url2);
 
   EXPECT_EQ(OK, callback3.WaitForResult());
   EXPECT_EQ("request3:80", info3.proxy_server().ToURI());
@@ -1821,27 +1942,30 @@ TEST_F(ProxyServiceTest, CancelInProgressRequest) {
 
 // Test the initial PAC download for resolver that expects bytes.
 TEST_F(ProxyServiceTest, InitialPACScriptDownload) {
+  const GURL url1("http://request1");
+  const GURL url2("http://request2");
+  const GURL url3("http://request3");
   MockProxyConfigService* config_service =
       new MockProxyConfigService("http://foopy/proxy.pac");
 
-  MockAsyncProxyResolverExpectsBytes resolver;
+  MockAsyncProxyResolver resolver;
+  MockAsyncProxyResolverFactory* factory =
+      new MockAsyncProxyResolverFactory(true);
 
-  ProxyService service(
-      config_service,
-      make_scoped_ptr(new ForwardingProxyResolverFactory(&resolver)), NULL);
+  ProxyService service(make_scoped_ptr(config_service),
+                       make_scoped_ptr(factory), NULL);
 
   MockProxyScriptFetcher* fetcher = new MockProxyScriptFetcher;
-  service.SetProxyScriptFetchers(fetcher,
-                                 new DoNothingDhcpProxyScriptFetcher());
+  service.SetProxyScriptFetchers(
+      fetcher, make_scoped_ptr(new DoNothingDhcpProxyScriptFetcher()));
 
   // Start 3 requests.
 
   ProxyInfo info1;
   TestCompletionCallback callback1;
   ProxyService::PacRequest* request1;
-  int rv = service.ResolveProxy(GURL("http://request1"), LOAD_NORMAL, &info1,
-                                callback1.callback(), &request1, NULL,
-                                BoundNetLog());
+  int rv = service.ResolveProxy(url1, LOAD_NORMAL, &info1, callback1.callback(),
+                                &request1, NULL, BoundNetLog());
   EXPECT_EQ(ERR_IO_PENDING, rv);
 
   // The first request should have triggered download of PAC script.
@@ -1851,21 +1975,19 @@ TEST_F(ProxyServiceTest, InitialPACScriptDownload) {
   ProxyInfo info2;
   TestCompletionCallback callback2;
   ProxyService::PacRequest* request2;
-  rv = service.ResolveProxy(GURL("http://request2"), LOAD_NORMAL, &info2,
-                            callback2.callback(), &request2, NULL,
-                            BoundNetLog());
+  rv = service.ResolveProxy(url2, LOAD_NORMAL, &info2, callback2.callback(),
+                            &request2, NULL, BoundNetLog());
   EXPECT_EQ(ERR_IO_PENDING, rv);
 
   ProxyInfo info3;
   TestCompletionCallback callback3;
   ProxyService::PacRequest* request3;
-  rv = service.ResolveProxy(GURL("http://request3"), LOAD_NORMAL, &info3,
-                            callback3.callback(), &request3, NULL,
-                            BoundNetLog());
+  rv = service.ResolveProxy(url3, LOAD_NORMAL, &info3, callback3.callback(),
+                            &request3, NULL, BoundNetLog());
   EXPECT_EQ(ERR_IO_PENDING, rv);
 
-  // Nothing has been sent to the resolver yet.
-  EXPECT_TRUE(resolver.pending_requests().empty());
+  // Nothing has been sent to the factory yet.
+  EXPECT_TRUE(factory->pending_requests().empty());
 
   EXPECT_EQ(LOAD_STATE_DOWNLOADING_PROXY_SCRIPT,
             service.GetLoadState(request1));
@@ -1882,29 +2004,25 @@ TEST_F(ProxyServiceTest, InitialPACScriptDownload) {
   // Now that the PAC script is downloaded, it will have been sent to the proxy
   // resolver.
   EXPECT_EQ(ASCIIToUTF16(kValidPacScript1),
-            resolver.pending_set_pac_script_request()->script_data()->utf16());
-  resolver.pending_set_pac_script_request()->CompleteNow(OK);
+            factory->pending_requests()[0]->script_data()->utf16());
+  factory->pending_requests()[0]->CompleteNowWithForwarder(OK, &resolver);
 
-  ASSERT_EQ(3u, resolver.pending_requests().size());
-  EXPECT_EQ(GURL("http://request1"), resolver.pending_requests()[0]->url());
-  EXPECT_EQ(GURL("http://request2"), resolver.pending_requests()[1]->url());
-  EXPECT_EQ(GURL("http://request3"), resolver.pending_requests()[2]->url());
+  RequestMap requests = GetPendingRequestsForURLs(resolver, url1, url2, url3);
 
   EXPECT_EQ(LOAD_STATE_RESOLVING_PROXY_FOR_URL, service.GetLoadState(request1));
   EXPECT_EQ(LOAD_STATE_RESOLVING_PROXY_FOR_URL, service.GetLoadState(request2));
   EXPECT_EQ(LOAD_STATE_RESOLVING_PROXY_FOR_URL, service.GetLoadState(request3));
 
   // Complete all the requests (in some order).
-  // Note that as we complete requests, they shift up in |pending_requests()|.
 
-  resolver.pending_requests()[2]->results()->UseNamedProxy("request3:80");
-  resolver.pending_requests()[2]->CompleteNow(OK);
+  requests[url3]->results()->UseNamedProxy("request3:80");
+  requests[url3]->CompleteNow(OK);
 
-  resolver.pending_requests()[0]->results()->UseNamedProxy("request1:80");
-  resolver.pending_requests()[0]->CompleteNow(OK);
+  requests[url1]->results()->UseNamedProxy("request1:80");
+  requests[url1]->CompleteNow(OK);
 
-  resolver.pending_requests()[0]->results()->UseNamedProxy("request2:80");
-  resolver.pending_requests()[0]->CompleteNow(OK);
+  requests[url2]->results()->UseNamedProxy("request2:80");
+  requests[url2]->CompleteNow(OK);
 
   // Complete and verify that requests ran as expected.
   EXPECT_EQ(OK, callback1.WaitForResult());
@@ -1928,26 +2046,28 @@ TEST_F(ProxyServiceTest, InitialPACScriptDownload) {
 
 // Test changing the ProxyScriptFetcher while PAC download is in progress.
 TEST_F(ProxyServiceTest, ChangeScriptFetcherWhilePACDownloadInProgress) {
+  const GURL url1("http://request1");
+  const GURL url2("http://request2");
   MockProxyConfigService* config_service =
       new MockProxyConfigService("http://foopy/proxy.pac");
 
-  MockAsyncProxyResolverExpectsBytes resolver;
+  MockAsyncProxyResolver resolver;
+  MockAsyncProxyResolverFactory* factory =
+      new MockAsyncProxyResolverFactory(true);
 
-  ProxyService service(
-      config_service,
-      make_scoped_ptr(new ForwardingProxyResolverFactory(&resolver)), NULL);
+  ProxyService service(make_scoped_ptr(config_service),
+                       make_scoped_ptr(factory), NULL);
 
   MockProxyScriptFetcher* fetcher = new MockProxyScriptFetcher;
-  service.SetProxyScriptFetchers(fetcher,
-                                 new DoNothingDhcpProxyScriptFetcher());
+  service.SetProxyScriptFetchers(
+      fetcher, make_scoped_ptr(new DoNothingDhcpProxyScriptFetcher()));
 
   // Start 2 requests.
 
   ProxyInfo info1;
   TestCompletionCallback callback1;
-  int rv =
-      service.ResolveProxy(GURL("http://request1"), LOAD_NORMAL, &info1,
-                           callback1.callback(), NULL, NULL, BoundNetLog());
+  int rv = service.ResolveProxy(url1, LOAD_NORMAL, &info1, callback1.callback(),
+                                NULL, NULL, BoundNetLog());
   EXPECT_EQ(ERR_IO_PENDING, rv);
 
   // The first request should have triggered download of PAC script.
@@ -1956,8 +2076,8 @@ TEST_F(ProxyServiceTest, ChangeScriptFetcherWhilePACDownloadInProgress) {
 
   ProxyInfo info2;
   TestCompletionCallback callback2;
-  rv = service.ResolveProxy(GURL("http://request2"), LOAD_NORMAL, &info2,
-                            callback2.callback(), NULL, NULL, BoundNetLog());
+  rv = service.ResolveProxy(url2, LOAD_NORMAL, &info2, callback2.callback(),
+                            NULL, NULL, BoundNetLog());
   EXPECT_EQ(ERR_IO_PENDING, rv);
 
   // At this point the ProxyService should be waiting for the
@@ -1968,23 +2088,21 @@ TEST_F(ProxyServiceTest, ChangeScriptFetcherWhilePACDownloadInProgress) {
   // the initialization with the new fetcher.
 
   fetcher = new MockProxyScriptFetcher;
-  service.SetProxyScriptFetchers(fetcher,
-                                 new DoNothingDhcpProxyScriptFetcher());
+  service.SetProxyScriptFetchers(
+      fetcher, make_scoped_ptr(new DoNothingDhcpProxyScriptFetcher()));
 
-  // Nothing has been sent to the resolver yet.
-  EXPECT_TRUE(resolver.pending_requests().empty());
+  // Nothing has been sent to the factory yet.
+  EXPECT_TRUE(factory->pending_requests().empty());
 
   fetcher->NotifyFetchCompletion(OK, kValidPacScript1);
 
   // Now that the PAC script is downloaded, it will have been sent to the proxy
   // resolver.
   EXPECT_EQ(ASCIIToUTF16(kValidPacScript1),
-            resolver.pending_set_pac_script_request()->script_data()->utf16());
-  resolver.pending_set_pac_script_request()->CompleteNow(OK);
+            factory->pending_requests()[0]->script_data()->utf16());
+  factory->pending_requests()[0]->CompleteNowWithForwarder(OK, &resolver);
 
-  ASSERT_EQ(2u, resolver.pending_requests().size());
-  EXPECT_EQ(GURL("http://request1"), resolver.pending_requests()[0]->url());
-  EXPECT_EQ(GURL("http://request2"), resolver.pending_requests()[1]->url());
+  GetPendingRequestsForURLs(resolver, url1, url2);
 }
 
 // Test cancellation of a request, while the PAC script is being fetched.
@@ -1992,15 +2110,16 @@ TEST_F(ProxyServiceTest, CancelWhilePACFetching) {
   MockProxyConfigService* config_service =
       new MockProxyConfigService("http://foopy/proxy.pac");
 
-  MockAsyncProxyResolverExpectsBytes resolver;
+  MockAsyncProxyResolver resolver;
+  MockAsyncProxyResolverFactory* factory =
+      new MockAsyncProxyResolverFactory(true);
 
-  ProxyService service(
-      config_service,
-      make_scoped_ptr(new ForwardingProxyResolverFactory(&resolver)), NULL);
+  ProxyService service(make_scoped_ptr(config_service),
+                       make_scoped_ptr(factory), NULL);
 
   MockProxyScriptFetcher* fetcher = new MockProxyScriptFetcher;
-  service.SetProxyScriptFetchers(fetcher,
-                                 new DoNothingDhcpProxyScriptFetcher());
+  service.SetProxyScriptFetchers(
+      fetcher, make_scoped_ptr(new DoNothingDhcpProxyScriptFetcher()));
 
   // Start 3 requests.
   ProxyInfo info1;
@@ -2030,8 +2149,8 @@ TEST_F(ProxyServiceTest, CancelWhilePACFetching) {
                             callback3.callback(), NULL, NULL, BoundNetLog());
   EXPECT_EQ(ERR_IO_PENDING, rv);
 
-  // Nothing has been sent to the resolver yet.
-  EXPECT_TRUE(resolver.pending_requests().empty());
+  // Nothing has been sent to the factory yet.
+  EXPECT_TRUE(factory->pending_requests().empty());
 
   // Cancel the first 2 requests.
   service.CancelPacRequest(request1);
@@ -2045,8 +2164,8 @@ TEST_F(ProxyServiceTest, CancelWhilePACFetching) {
   // Now that the PAC script is downloaded, it will have been sent to the
   // proxy resolver.
   EXPECT_EQ(ASCIIToUTF16(kValidPacScript1),
-            resolver.pending_set_pac_script_request()->script_data()->utf16());
-  resolver.pending_set_pac_script_request()->CompleteNow(OK);
+            factory->pending_requests()[0]->script_data()->utf16());
+  factory->pending_requests()[0]->CompleteNowWithForwarder(OK, &resolver);
 
   ASSERT_EQ(1u, resolver.pending_requests().size());
   EXPECT_EQ(GURL("http://request3"), resolver.pending_requests()[0]->url());
@@ -2063,7 +2182,7 @@ TEST_F(ProxyServiceTest, CancelWhilePACFetching) {
   EXPECT_FALSE(callback1.have_result());  // Cancelled.
   EXPECT_FALSE(callback2.have_result());  // Cancelled.
 
-  CapturedNetLogEntry::List entries1;
+  TestNetLogEntry::List entries1;
   log1.GetEntries(&entries1);
 
   // Check the NetLog for request 1 (which was cancelled) got filled properly.
@@ -2082,40 +2201,41 @@ TEST_F(ProxyServiceTest, CancelWhilePACFetching) {
 
 // Test that if auto-detect fails, we fall-back to the custom pac.
 TEST_F(ProxyServiceTest, FallbackFromAutodetectToCustomPac) {
+  const GURL url1("http://request1");
+  const GURL url2("http://request2");
   ProxyConfig config;
   config.set_auto_detect(true);
   config.set_pac_url(GURL("http://foopy/proxy.pac"));
   config.proxy_rules().ParseFromString("http=foopy:80");  // Won't be used.
 
   MockProxyConfigService* config_service = new MockProxyConfigService(config);
-  MockAsyncProxyResolverExpectsBytes resolver;
-  ProxyService service(
-      config_service,
-      make_scoped_ptr(new ForwardingProxyResolverFactory(&resolver)), NULL);
+  MockAsyncProxyResolver resolver;
+  MockAsyncProxyResolverFactory* factory =
+      new MockAsyncProxyResolverFactory(true);
+  ProxyService service(make_scoped_ptr(config_service),
+                       make_scoped_ptr(factory), NULL);
 
   MockProxyScriptFetcher* fetcher = new MockProxyScriptFetcher;
-  service.SetProxyScriptFetchers(fetcher,
-                                 new DoNothingDhcpProxyScriptFetcher());
+  service.SetProxyScriptFetchers(
+      fetcher, make_scoped_ptr(new DoNothingDhcpProxyScriptFetcher()));
 
   // Start 2 requests.
 
   ProxyInfo info1;
   TestCompletionCallback callback1;
-  int rv =
-      service.ResolveProxy(GURL("http://request1"), LOAD_NORMAL, &info1,
-                           callback1.callback(), NULL, NULL, BoundNetLog());
+  int rv = service.ResolveProxy(url1, LOAD_NORMAL, &info1, callback1.callback(),
+                                NULL, NULL, BoundNetLog());
   EXPECT_EQ(ERR_IO_PENDING, rv);
 
   ProxyInfo info2;
   TestCompletionCallback callback2;
   ProxyService::PacRequest* request2;
-  rv = service.ResolveProxy(GURL("http://request2"), LOAD_NORMAL, &info2,
-                            callback2.callback(), &request2, NULL,
-                            BoundNetLog());
+  rv = service.ResolveProxy(url2, LOAD_NORMAL, &info2, callback2.callback(),
+                            &request2, NULL, BoundNetLog());
   EXPECT_EQ(ERR_IO_PENDING, rv);
 
-  // Check that nothing has been sent to the proxy resolver yet.
-  ASSERT_EQ(0u, resolver.pending_requests().size());
+  // Check that nothing has been sent to the proxy resolver factory yet.
+  ASSERT_EQ(0u, factory->pending_requests().size());
 
   // It should be trying to auto-detect first -- FAIL the autodetect during
   // the script download.
@@ -2129,21 +2249,19 @@ TEST_F(ProxyServiceTest, FallbackFromAutodetectToCustomPac) {
   fetcher->NotifyFetchCompletion(OK, kValidPacScript1);
 
   EXPECT_EQ(ASCIIToUTF16(kValidPacScript1),
-            resolver.pending_set_pac_script_request()->script_data()->utf16());
-  resolver.pending_set_pac_script_request()->CompleteNow(OK);
+            factory->pending_requests()[0]->script_data()->utf16());
+  factory->pending_requests()[0]->CompleteNowWithForwarder(OK, &resolver);
 
   // Now finally, the pending requests should have been sent to the resolver
   // (which was initialized with custom PAC script).
 
-  ASSERT_EQ(2u, resolver.pending_requests().size());
-  EXPECT_EQ(GURL("http://request1"), resolver.pending_requests()[0]->url());
-  EXPECT_EQ(GURL("http://request2"), resolver.pending_requests()[1]->url());
+  RequestMap requests = GetPendingRequestsForURLs(resolver, url1, url2);
 
   // Complete the pending requests.
-  resolver.pending_requests()[1]->results()->UseNamedProxy("request2:80");
-  resolver.pending_requests()[1]->CompleteNow(OK);
-  resolver.pending_requests()[0]->results()->UseNamedProxy("request1:80");
-  resolver.pending_requests()[0]->CompleteNow(OK);
+  requests[url2]->results()->UseNamedProxy("request2:80");
+  requests[url2]->CompleteNow(OK);
+  requests[url1]->results()->UseNamedProxy("request1:80");
+  requests[url1]->CompleteNow(OK);
 
   // Verify that requests ran as expected.
   EXPECT_EQ(OK, callback1.WaitForResult());
@@ -2162,40 +2280,41 @@ TEST_F(ProxyServiceTest, FallbackFromAutodetectToCustomPac) {
 // This is the same test as FallbackFromAutodetectToCustomPac, except
 // the auto-detect script fails parsing rather than downloading.
 TEST_F(ProxyServiceTest, FallbackFromAutodetectToCustomPac2) {
+  const GURL url1("http://request1");
+  const GURL url2("http://request2");
   ProxyConfig config;
   config.set_auto_detect(true);
   config.set_pac_url(GURL("http://foopy/proxy.pac"));
   config.proxy_rules().ParseFromString("http=foopy:80");  // Won't be used.
 
   MockProxyConfigService* config_service = new MockProxyConfigService(config);
-  MockAsyncProxyResolverExpectsBytes resolver;
-  ProxyService service(
-      config_service,
-      make_scoped_ptr(new ForwardingProxyResolverFactory(&resolver)), NULL);
+  MockAsyncProxyResolver resolver;
+  MockAsyncProxyResolverFactory* factory =
+      new MockAsyncProxyResolverFactory(true);
+  ProxyService service(make_scoped_ptr(config_service),
+                       make_scoped_ptr(factory), NULL);
 
   MockProxyScriptFetcher* fetcher = new MockProxyScriptFetcher;
-  service.SetProxyScriptFetchers(fetcher,
-                                 new DoNothingDhcpProxyScriptFetcher());
+  service.SetProxyScriptFetchers(
+      fetcher, make_scoped_ptr(new DoNothingDhcpProxyScriptFetcher()));
 
   // Start 2 requests.
 
   ProxyInfo info1;
   TestCompletionCallback callback1;
-  int rv =
-      service.ResolveProxy(GURL("http://request1"), LOAD_NORMAL, &info1,
-                           callback1.callback(), NULL, NULL, BoundNetLog());
+  int rv = service.ResolveProxy(url1, LOAD_NORMAL, &info1, callback1.callback(),
+                                NULL, NULL, BoundNetLog());
   EXPECT_EQ(ERR_IO_PENDING, rv);
 
   ProxyInfo info2;
   TestCompletionCallback callback2;
   ProxyService::PacRequest* request2;
-  rv = service.ResolveProxy(GURL("http://request2"), LOAD_NORMAL, &info2,
-                            callback2.callback(), &request2, NULL,
-                            BoundNetLog());
+  rv = service.ResolveProxy(url2, LOAD_NORMAL, &info2, callback2.callback(),
+                            &request2, NULL, BoundNetLog());
   EXPECT_EQ(ERR_IO_PENDING, rv);
 
-  // Check that nothing has been sent to the proxy resolver yet.
-  ASSERT_EQ(0u, resolver.pending_requests().size());
+  // Check that nothing has been sent to the proxy resolver factory yet.
+  ASSERT_EQ(0u, factory->pending_requests().size());
 
   // It should be trying to auto-detect first -- succeed the download.
   EXPECT_TRUE(fetcher->has_pending_request());
@@ -2211,21 +2330,19 @@ TEST_F(ProxyServiceTest, FallbackFromAutodetectToCustomPac2) {
   fetcher->NotifyFetchCompletion(OK, kValidPacScript1);
 
   EXPECT_EQ(ASCIIToUTF16(kValidPacScript1),
-            resolver.pending_set_pac_script_request()->script_data()->utf16());
-  resolver.pending_set_pac_script_request()->CompleteNow(OK);
+            factory->pending_requests()[0]->script_data()->utf16());
+  factory->pending_requests()[0]->CompleteNowWithForwarder(OK, &resolver);
 
   // Now finally, the pending requests should have been sent to the resolver
   // (which was initialized with custom PAC script).
 
-  ASSERT_EQ(2u, resolver.pending_requests().size());
-  EXPECT_EQ(GURL("http://request1"), resolver.pending_requests()[0]->url());
-  EXPECT_EQ(GURL("http://request2"), resolver.pending_requests()[1]->url());
+  RequestMap requests = GetPendingRequestsForURLs(resolver, url1, url2);
 
   // Complete the pending requests.
-  resolver.pending_requests()[1]->results()->UseNamedProxy("request2:80");
-  resolver.pending_requests()[1]->CompleteNow(OK);
-  resolver.pending_requests()[0]->results()->UseNamedProxy("request1:80");
-  resolver.pending_requests()[0]->CompleteNow(OK);
+  requests[url2]->results()->UseNamedProxy("request2:80");
+  requests[url2]->CompleteNow(OK);
+  requests[url1]->results()->UseNamedProxy("request1:80");
+  requests[url1]->CompleteNow(OK);
 
   // Verify that requests ran as expected.
   EXPECT_EQ(OK, callback1.WaitForResult());
@@ -2244,14 +2361,14 @@ TEST_F(ProxyServiceTest, FallbackFromAutodetectToCustomToManual) {
   config.proxy_rules().ParseFromString("http=foopy:80");
 
   MockProxyConfigService* config_service = new MockProxyConfigService(config);
-  MockAsyncProxyResolverExpectsBytes resolver;
-  ProxyService service(
-      config_service,
-      make_scoped_ptr(new ForwardingProxyResolverFactory(&resolver)), NULL);
+  MockAsyncProxyResolverFactory* factory =
+      new MockAsyncProxyResolverFactory(true);
+  ProxyService service(make_scoped_ptr(config_service),
+                       make_scoped_ptr(factory), NULL);
 
   MockProxyScriptFetcher* fetcher = new MockProxyScriptFetcher;
-  service.SetProxyScriptFetchers(fetcher,
-                                 new DoNothingDhcpProxyScriptFetcher());
+  service.SetProxyScriptFetchers(
+      fetcher, make_scoped_ptr(new DoNothingDhcpProxyScriptFetcher()));
 
   // Start 2 requests.
 
@@ -2270,8 +2387,8 @@ TEST_F(ProxyServiceTest, FallbackFromAutodetectToCustomToManual) {
                             BoundNetLog());
   EXPECT_EQ(ERR_IO_PENDING, rv);
 
-  // Check that nothing has been sent to the proxy resolver yet.
-  ASSERT_EQ(0u, resolver.pending_requests().size());
+  // Check that nothing has been sent to the proxy resolver factory yet.
+  ASSERT_EQ(0u, factory->pending_requests().size());
 
   // It should be trying to auto-detect first -- fail the download.
   EXPECT_TRUE(fetcher->has_pending_request());
@@ -2285,7 +2402,7 @@ TEST_F(ProxyServiceTest, FallbackFromAutodetectToCustomToManual) {
 
   // Since we never managed to initialize a resolver, nothing should have been
   // sent to it.
-  ASSERT_EQ(0u, resolver.pending_requests().size());
+  ASSERT_EQ(0u, factory->pending_requests().size());
 
   // Verify that requests ran as expected -- they should have fallen back to
   // the manual proxy configuration for HTTP urls.
@@ -2305,14 +2422,15 @@ TEST_F(ProxyServiceTest, BypassDoesntApplyToPac) {
   config.proxy_rules().bypass_rules.ParseFromString("www.google.com");
 
   MockProxyConfigService* config_service = new MockProxyConfigService(config);
-  MockAsyncProxyResolverExpectsBytes resolver;
-  ProxyService service(
-      config_service,
-      make_scoped_ptr(new ForwardingProxyResolverFactory(&resolver)), NULL);
+  MockAsyncProxyResolver resolver;
+  MockAsyncProxyResolverFactory* factory =
+      new MockAsyncProxyResolverFactory(true);
+  ProxyService service(make_scoped_ptr(config_service),
+                       make_scoped_ptr(factory), NULL);
 
   MockProxyScriptFetcher* fetcher = new MockProxyScriptFetcher;
-  service.SetProxyScriptFetchers(fetcher,
-                                 new DoNothingDhcpProxyScriptFetcher());
+  service.SetProxyScriptFetchers(
+      fetcher, make_scoped_ptr(new DoNothingDhcpProxyScriptFetcher()));
 
   // Start 1 requests.
 
@@ -2323,8 +2441,8 @@ TEST_F(ProxyServiceTest, BypassDoesntApplyToPac) {
                            callback1.callback(), NULL, NULL, BoundNetLog());
   EXPECT_EQ(ERR_IO_PENDING, rv);
 
-  // Check that nothing has been sent to the proxy resolver yet.
-  ASSERT_EQ(0u, resolver.pending_requests().size());
+  // Check that nothing has been sent to the proxy resolver factory yet.
+  ASSERT_EQ(0u, factory->pending_requests().size());
 
   // It should be trying to auto-detect first -- succeed the download.
   EXPECT_TRUE(fetcher->has_pending_request());
@@ -2332,8 +2450,8 @@ TEST_F(ProxyServiceTest, BypassDoesntApplyToPac) {
   fetcher->NotifyFetchCompletion(OK, kValidPacScript1);
 
   EXPECT_EQ(ASCIIToUTF16(kValidPacScript1),
-            resolver.pending_set_pac_script_request()->script_data()->utf16());
-  resolver.pending_set_pac_script_request()->CompleteNow(OK);
+            factory->pending_requests()[0]->script_data()->utf16());
+  factory->pending_requests()[0]->CompleteNowWithForwarder(OK, &resolver);
 
   ASSERT_EQ(1u, resolver.pending_requests().size());
   EXPECT_EQ(GURL("http://www.google.com"),
@@ -2375,14 +2493,14 @@ TEST_F(ProxyServiceTest, DeleteWhileInitProxyResolverHasOutstandingFetch) {
     ProxyConfig::CreateFromCustomPacURL(GURL("http://foopy/proxy.pac"));
 
   MockProxyConfigService* config_service = new MockProxyConfigService(config);
-  MockAsyncProxyResolverExpectsBytes resolver;
-  ProxyService service(
-      config_service,
-      make_scoped_ptr(new ForwardingProxyResolverFactory(&resolver)), NULL);
+  MockAsyncProxyResolverFactory* factory =
+      new MockAsyncProxyResolverFactory(true);
+  ProxyService service(make_scoped_ptr(config_service),
+                       make_scoped_ptr(factory), NULL);
 
   MockProxyScriptFetcher* fetcher = new MockProxyScriptFetcher;
-  service.SetProxyScriptFetchers(fetcher,
-                                 new DoNothingDhcpProxyScriptFetcher());
+  service.SetProxyScriptFetchers(
+      fetcher, make_scoped_ptr(new DoNothingDhcpProxyScriptFetcher()));
 
   // Start 1 request.
 
@@ -2393,8 +2511,8 @@ TEST_F(ProxyServiceTest, DeleteWhileInitProxyResolverHasOutstandingFetch) {
                            callback1.callback(), NULL, NULL, BoundNetLog());
   EXPECT_EQ(ERR_IO_PENDING, rv);
 
-  // Check that nothing has been sent to the proxy resolver yet.
-  ASSERT_EQ(0u, resolver.pending_requests().size());
+  // Check that nothing has been sent to the proxy resolver factory yet.
+  ASSERT_EQ(0u, factory->pending_requests().size());
 
   // InitProxyResolver should have issued a request to the ProxyScriptFetcher
   // and be waiting on that to complete.
@@ -2410,11 +2528,11 @@ TEST_F(ProxyServiceTest, DeleteWhileInitProxyResolverHasOutstandingSet) {
   MockProxyConfigService* config_service =
       new MockProxyConfigService("http://foopy/proxy.pac");
 
-  MockAsyncProxyResolver resolver;
+  MockAsyncProxyResolverFactory* factory =
+      new MockAsyncProxyResolverFactory(false);
 
-  ProxyService service(
-      config_service,
-      make_scoped_ptr(new ForwardingProxyResolverFactory(&resolver)), NULL);
+  ProxyService service(make_scoped_ptr(config_service),
+                       make_scoped_ptr(factory), NULL);
 
   GURL url("http://www.google.com/");
 
@@ -2425,14 +2543,15 @@ TEST_F(ProxyServiceTest, DeleteWhileInitProxyResolverHasOutstandingSet) {
   EXPECT_EQ(ERR_IO_PENDING, rv);
 
   EXPECT_EQ(GURL("http://foopy/proxy.pac"),
-            resolver.pending_set_pac_script_request()->script_data()->url());
+            factory->pending_requests()[0]->script_data()->url());
 }
 
 TEST_F(ProxyServiceTest, ResetProxyConfigService) {
   ProxyConfig config1;
   config1.proxy_rules().ParseFromString("foopy1:8080");
   config1.set_auto_detect(false);
-  ProxyService service(new MockProxyConfigService(config1), nullptr, NULL);
+  ProxyService service(make_scoped_ptr(new MockProxyConfigService(config1)),
+                       nullptr, NULL);
 
   ProxyInfo info;
   TestCompletionCallback callback1;
@@ -2445,7 +2564,8 @@ TEST_F(ProxyServiceTest, ResetProxyConfigService) {
   ProxyConfig config2;
   config2.proxy_rules().ParseFromString("foopy2:8080");
   config2.set_auto_detect(false);
-  service.ResetConfigService(new MockProxyConfigService(config2));
+  service.ResetConfigService(
+      make_scoped_ptr(new MockProxyConfigService(config2)));
   TestCompletionCallback callback2;
   rv = service.ResolveProxy(GURL("http://request2"), LOAD_NORMAL, &info,
                             callback2.callback(), NULL, NULL, BoundNetLog());
@@ -2460,9 +2580,10 @@ TEST_F(ProxyServiceTest, UpdateConfigFromPACToDirect) {
 
   MockProxyConfigService* config_service = new MockProxyConfigService(config);
   MockAsyncProxyResolver resolver;
-  ProxyService service(
-      config_service,
-      make_scoped_ptr(new ForwardingProxyResolverFactory(&resolver)), NULL);
+  MockAsyncProxyResolverFactory* factory =
+      new MockAsyncProxyResolverFactory(false);
+  ProxyService service(make_scoped_ptr(config_service),
+                       make_scoped_ptr(factory), NULL);
 
   // Start 1 request.
 
@@ -2473,13 +2594,10 @@ TEST_F(ProxyServiceTest, UpdateConfigFromPACToDirect) {
                            callback1.callback(), NULL, NULL, BoundNetLog());
   EXPECT_EQ(ERR_IO_PENDING, rv);
 
-  // Check that nothing has been sent to the proxy resolver yet.
-  ASSERT_EQ(0u, resolver.pending_requests().size());
-
   // Successfully set the autodetect script.
   EXPECT_EQ(ProxyResolverScriptData::TYPE_AUTO_DETECT,
-            resolver.pending_set_pac_script_request()->script_data()->type());
-  resolver.pending_set_pac_script_request()->CompleteNow(OK);
+            factory->pending_requests()[0]->script_data()->type());
+  factory->pending_requests()[0]->CompleteNowWithForwarder(OK, &resolver);
 
   // Complete the pending request.
   ASSERT_EQ(1u, resolver.pending_requests().size());
@@ -2511,17 +2629,18 @@ TEST_F(ProxyServiceTest, NetworkChangeTriggersPacRefetch) {
   MockProxyConfigService* config_service =
       new MockProxyConfigService("http://foopy/proxy.pac");
 
-  MockAsyncProxyResolverExpectsBytes resolver;
+  MockAsyncProxyResolver resolver;
+  MockAsyncProxyResolverFactory* factory =
+      new MockAsyncProxyResolverFactory(true);
 
   TestNetLog log;
 
-  ProxyService service(
-      config_service,
-      make_scoped_ptr(new ForwardingProxyResolverFactory(&resolver)), &log);
+  ProxyService service(make_scoped_ptr(config_service),
+                       make_scoped_ptr(factory), &log);
 
   MockProxyScriptFetcher* fetcher = new MockProxyScriptFetcher;
-  service.SetProxyScriptFetchers(fetcher,
-                                 new DoNothingDhcpProxyScriptFetcher());
+  service.SetProxyScriptFetchers(
+      fetcher, make_scoped_ptr(new DoNothingDhcpProxyScriptFetcher()));
 
   // Disable the "wait after IP address changes" hack, so this unit-test can
   // complete quickly.
@@ -2540,8 +2659,8 @@ TEST_F(ProxyServiceTest, NetworkChangeTriggersPacRefetch) {
   EXPECT_TRUE(fetcher->has_pending_request());
   EXPECT_EQ(GURL("http://foopy/proxy.pac"), fetcher->pending_request_url());
 
-  // Nothing has been sent to the resolver yet.
-  EXPECT_TRUE(resolver.pending_requests().empty());
+  // Nothing has been sent to the factory yet.
+  EXPECT_TRUE(factory->pending_requests().empty());
 
   // At this point the ProxyService should be waiting for the
   // ProxyScriptFetcher to invoke its completion callback, notifying it of
@@ -2551,8 +2670,8 @@ TEST_F(ProxyServiceTest, NetworkChangeTriggersPacRefetch) {
   // Now that the PAC script is downloaded, the request will have been sent to
   // the proxy resolver.
   EXPECT_EQ(ASCIIToUTF16(kValidPacScript1),
-            resolver.pending_set_pac_script_request()->script_data()->utf16());
-  resolver.pending_set_pac_script_request()->CompleteNow(OK);
+            factory->pending_requests()[0]->script_data()->utf16());
+  factory->pending_requests()[0]->CompleteNowWithForwarder(OK, &resolver);
 
   ASSERT_EQ(1u, resolver.pending_requests().size());
   EXPECT_EQ(GURL("http://request1"), resolver.pending_requests()[0]->url());
@@ -2583,8 +2702,8 @@ TEST_F(ProxyServiceTest, NetworkChangeTriggersPacRefetch) {
   EXPECT_TRUE(fetcher->has_pending_request());
   EXPECT_EQ(GURL("http://foopy/proxy.pac"), fetcher->pending_request_url());
 
-  // Nothing has been sent to the resolver yet.
-  EXPECT_TRUE(resolver.pending_requests().empty());
+  // Nothing has been sent to the factory yet.
+  EXPECT_TRUE(factory->pending_requests().empty());
 
   // Simulate the PAC script fetch as having completed (this time with
   // different data).
@@ -2593,8 +2712,8 @@ TEST_F(ProxyServiceTest, NetworkChangeTriggersPacRefetch) {
   // Now that the PAC script is downloaded, the second request will have been
   // sent to the proxy resolver.
   EXPECT_EQ(ASCIIToUTF16(kValidPacScript2),
-            resolver.pending_set_pac_script_request()->script_data()->utf16());
-  resolver.pending_set_pac_script_request()->CompleteNow(OK);
+            factory->pending_requests()[0]->script_data()->utf16());
+  factory->pending_requests()[0]->CompleteNowWithForwarder(OK, &resolver);
 
   ASSERT_EQ(1u, resolver.pending_requests().size());
   EXPECT_EQ(GURL("http://request2"), resolver.pending_requests()[0]->url());
@@ -2610,7 +2729,7 @@ TEST_F(ProxyServiceTest, NetworkChangeTriggersPacRefetch) {
   // Check that the expected events were output to the log stream. In particular
   // PROXY_CONFIG_CHANGED should have only been emitted once (for the initial
   // setup), and NOT a second time when the IP address changed.
-  CapturedNetLogEntry::List entries;
+  TestNetLogEntry::List entries;
   log.GetEntries(&entries);
 
   EXPECT_TRUE(LogContainsEntryWithType(entries, 0,
@@ -2633,15 +2752,16 @@ TEST_F(ProxyServiceTest, PACScriptRefetchAfterFailure) {
   MockProxyConfigService* config_service =
       new MockProxyConfigService("http://foopy/proxy.pac");
 
-  MockAsyncProxyResolverExpectsBytes resolver;
+  MockAsyncProxyResolver resolver;
+  MockAsyncProxyResolverFactory* factory =
+      new MockAsyncProxyResolverFactory(true);
 
-  ProxyService service(
-      config_service,
-      make_scoped_ptr(new ForwardingProxyResolverFactory(&resolver)), NULL);
+  ProxyService service(make_scoped_ptr(config_service),
+                       make_scoped_ptr(factory), NULL);
 
   MockProxyScriptFetcher* fetcher = new MockProxyScriptFetcher;
-  service.SetProxyScriptFetchers(fetcher,
-                                 new DoNothingDhcpProxyScriptFetcher());
+  service.SetProxyScriptFetchers(
+      fetcher, make_scoped_ptr(new DoNothingDhcpProxyScriptFetcher()));
 
   // Start 1 request.
 
@@ -2656,8 +2776,8 @@ TEST_F(ProxyServiceTest, PACScriptRefetchAfterFailure) {
   EXPECT_TRUE(fetcher->has_pending_request());
   EXPECT_EQ(GURL("http://foopy/proxy.pac"), fetcher->pending_request_url());
 
-  // Nothing has been sent to the resolver yet.
-  EXPECT_TRUE(resolver.pending_requests().empty());
+  // Nothing has been sent to the factory yet.
+  EXPECT_TRUE(factory->pending_requests().empty());
 
   // At this point the ProxyService should be waiting for the
   // ProxyScriptFetcher to invoke its completion callback, notifying it of
@@ -2667,7 +2787,7 @@ TEST_F(ProxyServiceTest, PACScriptRefetchAfterFailure) {
   // fall-back to DIRECT connections.
   fetcher->NotifyFetchCompletion(ERR_FAILED, std::string());
 
-  ASSERT_TRUE(resolver.pending_requests().empty());
+  ASSERT_TRUE(factory->pending_requests().empty());
 
   // Wait for completion callback, and verify it used DIRECT.
   EXPECT_EQ(OK, callback1.WaitForResult());
@@ -2683,7 +2803,7 @@ TEST_F(ProxyServiceTest, PACScriptRefetchAfterFailure) {
   // special unit-test mode.
   fetcher->WaitUntilFetch();
 
-  ASSERT_TRUE(resolver.pending_requests().empty());
+  ASSERT_TRUE(factory->pending_requests().empty());
 
   // Make sure that our background checker is trying to download the expected
   // PAC script (same one as before). This time we will simulate a successful
@@ -2697,8 +2817,8 @@ TEST_F(ProxyServiceTest, PACScriptRefetchAfterFailure) {
   // Now that the PAC script is downloaded, it should be used to initialize the
   // ProxyResolver. Simulate a successful parse.
   EXPECT_EQ(ASCIIToUTF16(kValidPacScript1),
-            resolver.pending_set_pac_script_request()->script_data()->utf16());
-  resolver.pending_set_pac_script_request()->CompleteNow(OK);
+            factory->pending_requests()[0]->script_data()->utf16());
+  factory->pending_requests()[0]->CompleteNowWithForwarder(OK, &resolver);
 
   // At this point the ProxyService should have re-configured itself to use the
   // PAC script (thereby recovering from the initial fetch failure). We will
@@ -2738,15 +2858,16 @@ TEST_F(ProxyServiceTest, PACScriptRefetchAfterContentChange) {
   MockProxyConfigService* config_service =
       new MockProxyConfigService("http://foopy/proxy.pac");
 
-  MockAsyncProxyResolverExpectsBytes resolver;
+  MockAsyncProxyResolver resolver;
+  MockAsyncProxyResolverFactory* factory =
+      new MockAsyncProxyResolverFactory(true);
 
-  ProxyService service(
-      config_service,
-      make_scoped_ptr(new ForwardingProxyResolverFactory(&resolver)), NULL);
+  ProxyService service(make_scoped_ptr(config_service),
+                       make_scoped_ptr(factory), NULL);
 
   MockProxyScriptFetcher* fetcher = new MockProxyScriptFetcher;
-  service.SetProxyScriptFetchers(fetcher,
-                                 new DoNothingDhcpProxyScriptFetcher());
+  service.SetProxyScriptFetchers(
+      fetcher, make_scoped_ptr(new DoNothingDhcpProxyScriptFetcher()));
 
   // Start 1 request.
 
@@ -2761,8 +2882,8 @@ TEST_F(ProxyServiceTest, PACScriptRefetchAfterContentChange) {
   EXPECT_TRUE(fetcher->has_pending_request());
   EXPECT_EQ(GURL("http://foopy/proxy.pac"), fetcher->pending_request_url());
 
-  // Nothing has been sent to the resolver yet.
-  EXPECT_TRUE(resolver.pending_requests().empty());
+  // Nothing has been sent to the factory yet.
+  EXPECT_TRUE(factory->pending_requests().empty());
 
   // At this point the ProxyService should be waiting for the
   // ProxyScriptFetcher to invoke its completion callback, notifying it of
@@ -2772,8 +2893,8 @@ TEST_F(ProxyServiceTest, PACScriptRefetchAfterContentChange) {
   // Now that the PAC script is downloaded, the request will have been sent to
   // the proxy resolver.
   EXPECT_EQ(ASCIIToUTF16(kValidPacScript1),
-            resolver.pending_set_pac_script_request()->script_data()->utf16());
-  resolver.pending_set_pac_script_request()->CompleteNow(OK);
+            factory->pending_requests()[0]->script_data()->utf16());
+  factory->pending_requests()[0]->CompleteNowWithForwarder(OK, &resolver);
 
   ASSERT_EQ(1u, resolver.pending_requests().size());
   EXPECT_EQ(GURL("http://request1"), resolver.pending_requests()[0]->url());
@@ -2795,6 +2916,7 @@ TEST_F(ProxyServiceTest, PACScriptRefetchAfterContentChange) {
   // special unit-test mode.
   fetcher->WaitUntilFetch();
 
+  ASSERT_TRUE(factory->pending_requests().empty());
   ASSERT_TRUE(resolver.pending_requests().empty());
 
   // Make sure that our background checker is trying to download the expected
@@ -2809,8 +2931,8 @@ TEST_F(ProxyServiceTest, PACScriptRefetchAfterContentChange) {
   // Now that the PAC script is downloaded, it should be used to initialize the
   // ProxyResolver. Simulate a successful parse.
   EXPECT_EQ(ASCIIToUTF16(kValidPacScript2),
-            resolver.pending_set_pac_script_request()->script_data()->utf16());
-  resolver.pending_set_pac_script_request()->CompleteNow(OK);
+            factory->pending_requests()[0]->script_data()->utf16());
+  factory->pending_requests()[0]->CompleteNowWithForwarder(OK, &resolver);
 
   // At this point the ProxyService should have re-configured itself to use the
   // new PAC script.
@@ -2848,15 +2970,16 @@ TEST_F(ProxyServiceTest, PACScriptRefetchAfterContentUnchanged) {
   MockProxyConfigService* config_service =
       new MockProxyConfigService("http://foopy/proxy.pac");
 
-  MockAsyncProxyResolverExpectsBytes resolver;
+  MockAsyncProxyResolver resolver;
+  MockAsyncProxyResolverFactory* factory =
+      new MockAsyncProxyResolverFactory(true);
 
-  ProxyService service(
-      config_service,
-      make_scoped_ptr(new ForwardingProxyResolverFactory(&resolver)), NULL);
+  ProxyService service(make_scoped_ptr(config_service),
+                       make_scoped_ptr(factory), NULL);
 
   MockProxyScriptFetcher* fetcher = new MockProxyScriptFetcher;
-  service.SetProxyScriptFetchers(fetcher,
-                                 new DoNothingDhcpProxyScriptFetcher());
+  service.SetProxyScriptFetchers(
+      fetcher, make_scoped_ptr(new DoNothingDhcpProxyScriptFetcher()));
 
   // Start 1 request.
 
@@ -2871,8 +2994,8 @@ TEST_F(ProxyServiceTest, PACScriptRefetchAfterContentUnchanged) {
   EXPECT_TRUE(fetcher->has_pending_request());
   EXPECT_EQ(GURL("http://foopy/proxy.pac"), fetcher->pending_request_url());
 
-  // Nothing has been sent to the resolver yet.
-  EXPECT_TRUE(resolver.pending_requests().empty());
+  // Nothing has been sent to the factory yet.
+  EXPECT_TRUE(factory->pending_requests().empty());
 
   // At this point the ProxyService should be waiting for the
   // ProxyScriptFetcher to invoke its completion callback, notifying it of
@@ -2882,8 +3005,8 @@ TEST_F(ProxyServiceTest, PACScriptRefetchAfterContentUnchanged) {
   // Now that the PAC script is downloaded, the request will have been sent to
   // the proxy resolver.
   EXPECT_EQ(ASCIIToUTF16(kValidPacScript1),
-            resolver.pending_set_pac_script_request()->script_data()->utf16());
-  resolver.pending_set_pac_script_request()->CompleteNow(OK);
+            factory->pending_requests()[0]->script_data()->utf16());
+  factory->pending_requests()[0]->CompleteNowWithForwarder(OK, &resolver);
 
   ASSERT_EQ(1u, resolver.pending_requests().size());
   EXPECT_EQ(GURL("http://request1"), resolver.pending_requests()[0]->url());
@@ -2905,6 +3028,7 @@ TEST_F(ProxyServiceTest, PACScriptRefetchAfterContentUnchanged) {
   // special unit-test mode.
   fetcher->WaitUntilFetch();
 
+  ASSERT_TRUE(factory->pending_requests().empty());
   ASSERT_TRUE(resolver.pending_requests().empty());
 
   // Make sure that our background checker is trying to download the expected
@@ -2916,7 +3040,8 @@ TEST_F(ProxyServiceTest, PACScriptRefetchAfterContentUnchanged) {
 
   base::MessageLoop::current()->RunUntilIdle();
 
-  ASSERT_FALSE(resolver.has_pending_set_pac_script_request());
+  ASSERT_TRUE(factory->pending_requests().empty());
+  ASSERT_TRUE(resolver.pending_requests().empty());
 
   // At this point the ProxyService is still running the same PAC script as
   // before.
@@ -2954,15 +3079,16 @@ TEST_F(ProxyServiceTest, PACScriptRefetchAfterSuccess) {
   MockProxyConfigService* config_service =
       new MockProxyConfigService("http://foopy/proxy.pac");
 
-  MockAsyncProxyResolverExpectsBytes resolver;
+  MockAsyncProxyResolver resolver;
+  MockAsyncProxyResolverFactory* factory =
+      new MockAsyncProxyResolverFactory(true);
 
-  ProxyService service(
-      config_service,
-      make_scoped_ptr(new ForwardingProxyResolverFactory(&resolver)), NULL);
+  ProxyService service(make_scoped_ptr(config_service),
+                       make_scoped_ptr(factory), NULL);
 
   MockProxyScriptFetcher* fetcher = new MockProxyScriptFetcher;
-  service.SetProxyScriptFetchers(fetcher,
-                                 new DoNothingDhcpProxyScriptFetcher());
+  service.SetProxyScriptFetchers(
+      fetcher, make_scoped_ptr(new DoNothingDhcpProxyScriptFetcher()));
 
   // Start 1 request.
 
@@ -2977,8 +3103,8 @@ TEST_F(ProxyServiceTest, PACScriptRefetchAfterSuccess) {
   EXPECT_TRUE(fetcher->has_pending_request());
   EXPECT_EQ(GURL("http://foopy/proxy.pac"), fetcher->pending_request_url());
 
-  // Nothing has been sent to the resolver yet.
-  EXPECT_TRUE(resolver.pending_requests().empty());
+  // Nothing has been sent to the factory yet.
+  EXPECT_TRUE(factory->pending_requests().empty());
 
   // At this point the ProxyService should be waiting for the
   // ProxyScriptFetcher to invoke its completion callback, notifying it of
@@ -2988,8 +3114,8 @@ TEST_F(ProxyServiceTest, PACScriptRefetchAfterSuccess) {
   // Now that the PAC script is downloaded, the request will have been sent to
   // the proxy resolver.
   EXPECT_EQ(ASCIIToUTF16(kValidPacScript1),
-            resolver.pending_set_pac_script_request()->script_data()->utf16());
-  resolver.pending_set_pac_script_request()->CompleteNow(OK);
+            factory->pending_requests()[0]->script_data()->utf16());
+  factory->pending_requests()[0]->CompleteNowWithForwarder(OK, &resolver);
 
   ASSERT_EQ(1u, resolver.pending_requests().size());
   EXPECT_EQ(GURL("http://request1"), resolver.pending_requests()[0]->url());
@@ -3011,6 +3137,7 @@ TEST_F(ProxyServiceTest, PACScriptRefetchAfterSuccess) {
   // special unit-test mode.
   fetcher->WaitUntilFetch();
 
+  ASSERT_TRUE(factory->pending_requests().empty());
   ASSERT_TRUE(resolver.pending_requests().empty());
 
   // Make sure that our background checker is trying to download the expected
@@ -3106,15 +3233,16 @@ TEST_F(ProxyServiceTest, PACScriptRefetchAfterActivity) {
   MockProxyConfigService* config_service =
       new MockProxyConfigService("http://foopy/proxy.pac");
 
-  MockAsyncProxyResolverExpectsBytes resolver;
+  MockAsyncProxyResolver resolver;
+  MockAsyncProxyResolverFactory* factory =
+      new MockAsyncProxyResolverFactory(true);
 
-  ProxyService service(
-      config_service,
-      make_scoped_ptr(new ForwardingProxyResolverFactory(&resolver)), NULL);
+  ProxyService service(make_scoped_ptr(config_service),
+                       make_scoped_ptr(factory), NULL);
 
   MockProxyScriptFetcher* fetcher = new MockProxyScriptFetcher;
-  service.SetProxyScriptFetchers(fetcher,
-                                 new DoNothingDhcpProxyScriptFetcher());
+  service.SetProxyScriptFetchers(
+      fetcher, make_scoped_ptr(new DoNothingDhcpProxyScriptFetcher()));
 
   // Start 1 request.
 
@@ -3129,8 +3257,8 @@ TEST_F(ProxyServiceTest, PACScriptRefetchAfterActivity) {
   EXPECT_TRUE(fetcher->has_pending_request());
   EXPECT_EQ(GURL("http://foopy/proxy.pac"), fetcher->pending_request_url());
 
-  // Nothing has been sent to the resolver yet.
-  EXPECT_TRUE(resolver.pending_requests().empty());
+  // Nothing has been sent to the factory yet.
+  EXPECT_TRUE(factory->pending_requests().empty());
 
   // At this point the ProxyService should be waiting for the
   // ProxyScriptFetcher to invoke its completion callback, notifying it of
@@ -3140,8 +3268,8 @@ TEST_F(ProxyServiceTest, PACScriptRefetchAfterActivity) {
   // Now that the PAC script is downloaded, the request will have been sent to
   // the proxy resolver.
   EXPECT_EQ(ASCIIToUTF16(kValidPacScript1),
-            resolver.pending_set_pac_script_request()->script_data()->utf16());
-  resolver.pending_set_pac_script_request()->CompleteNow(OK);
+            factory->pending_requests()[0]->script_data()->utf16());
+  factory->pending_requests()[0]->CompleteNowWithForwarder(OK, &resolver);
 
   ASSERT_EQ(1u, resolver.pending_requests().size());
   EXPECT_EQ(GURL("http://request1"), resolver.pending_requests()[0]->url());
@@ -3159,6 +3287,7 @@ TEST_F(ProxyServiceTest, PACScriptRefetchAfterActivity) {
   // (i.e. another call to ResolveProxy()).
 
   ASSERT_FALSE(fetcher->has_pending_request());
+  ASSERT_TRUE(factory->pending_requests().empty());
   ASSERT_TRUE(resolver.pending_requests().empty());
 
   // Start a second request.
@@ -3205,11 +3334,11 @@ TEST_F(ProxyServiceTest, SynchronousWithPAC) {
   MockProxyConfigService* config_service =
       new MockProxyConfigService("http://foopy/proxy.pac");
 
-  MockAsyncProxyResolver resolver;
+  MockAsyncProxyResolverFactory* factory =
+      new MockAsyncProxyResolverFactory(false);
 
-  ProxyService service(
-      config_service,
-      make_scoped_ptr(new ForwardingProxyResolverFactory(&resolver)), NULL);
+  ProxyService service(make_scoped_ptr(config_service),
+                       make_scoped_ptr(factory), NULL);
 
   GURL url("http://www.google.com/");
 
@@ -3220,9 +3349,6 @@ TEST_F(ProxyServiceTest, SynchronousWithPAC) {
   bool synchronous_success = service.TryResolveProxySynchronously(
       url, LOAD_NORMAL, &info, NULL, log.bound());
   EXPECT_FALSE(synchronous_success);
-
-  // No request should have been queued.
-  EXPECT_EQ(0u, resolver.pending_requests().size());
 
   // |info| should not have been modified.
   EXPECT_TRUE(info.is_direct());
@@ -3235,11 +3361,11 @@ TEST_F(ProxyServiceTest, SynchronousWithFixedConfiguration) {
   config.proxy_rules().ParseFromString("foopy1:8080");
   config.set_auto_detect(false);
 
-  MockAsyncProxyResolver resolver;
+  MockAsyncProxyResolverFactory* factory =
+      new MockAsyncProxyResolverFactory(false);
 
-  ProxyService service(
-      new MockProxyConfigService(config),
-      make_scoped_ptr(new ForwardingProxyResolverFactory(&resolver)), NULL);
+  ProxyService service(make_scoped_ptr(new MockProxyConfigService(config)),
+                       make_scoped_ptr(factory), NULL);
 
   GURL url("http://www.google.com/");
 
@@ -3253,7 +3379,7 @@ TEST_F(ProxyServiceTest, SynchronousWithFixedConfiguration) {
   EXPECT_EQ("foopy1", info.proxy_server().host_port_pair().host());
 
   // No request should have been queued.
-  EXPECT_EQ(0u, resolver.pending_requests().size());
+  EXPECT_EQ(0u, factory->pending_requests().size());
 }
 
 }  // namespace net

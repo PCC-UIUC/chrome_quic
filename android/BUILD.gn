@@ -10,7 +10,6 @@ android_library("net_java") {
   deps = [
     "//base:base_java",
   ]
-
   srcjar_deps = [
     ":net_errors_java",
     ":net_android_java_enums_srcjar",
@@ -29,6 +28,12 @@ android_aidl("remote_android_keystore_aidl") {
 
 android_library("net_java_test_support") {
   DEPRECATED_java_in_dir = "../test/android/javatests/src"
+  deps = [
+    "//base:base_java",
+    "//third_party/android_tools:legacy_http_javalib",
+    ":net_java",
+  ]
+  srcjar_deps = [ ":net_java_test_support_enums_srcjar" ]
 }
 
 android_library("net_javatests") {
@@ -50,12 +55,22 @@ java_cpp_template("net_errors_java") {
   ]
 }
 
+java_cpp_enum("net_java_test_support_enums_srcjar") {
+  sources = [
+    "../test/url_request/url_request_failed_job.h",
+  ]
+  outputs = [
+    "org/chromium/net/test/FailurePhase.java",
+  ]
+}
+
 java_cpp_enum("net_android_java_enums_srcjar") {
   sources = [
     "../base/mime_util.h",
     "../base/network_change_notifier.h",
     "cert_verify_result_android.h",
     "keystore.h",
+    "traffic_stats.cc",
   ]
   outputs = [
     "org/chromium/net/CertificateMimeType.java",
@@ -63,6 +78,19 @@ java_cpp_enum("net_android_java_enums_srcjar") {
     "org/chromium/net/ConnectionSubtype.java",
     "org/chromium/net/ConnectionType.java",
     "org/chromium/net/PrivateKeyType.java",
+    "org/chromium/net/TrafficStatsError.java",
+  ]
+}
+
+junit_binary("net_junit_tests") {
+  java_files =
+      [ "junit/src/org/chromium/net/HttpNegotiateAuthenticatorTest.java" ]
+  deps = [
+    ":net_java",
+    "//base:base_java",
+    "//base:base_java_test_support",
+    "//base:base_junit_test_support",
+    "//third_party/junit:hamcrest",
   ]
 }
 

@@ -93,8 +93,14 @@ class TestNetworkDelegateImpl : public NetworkDelegateImpl {
     IncrementAndCompareCounter("on_response_started_count");
   }
 
-  void OnRawBytesRead(const URLRequest& request, int bytes_read) override {
-    IncrementAndCompareCounter("on_raw_bytes_read_count");
+  void OnNetworkBytesReceived(const URLRequest& request,
+                              int64_t bytes_received) override {
+    IncrementAndCompareCounter("on_network_bytes_received_count");
+  }
+
+  void OnNetworkBytesSent(const URLRequest& request,
+                          int64_t bytes_sent) override {
+    IncrementAndCompareCounter("on_network_bytes_sent_count");
   }
 
   void OnCompleted(URLRequest* request, bool started) override {
@@ -133,11 +139,6 @@ class TestNetworkDelegateImpl : public NetworkDelegateImpl {
   bool OnCanAccessFile(const URLRequest& request,
                        const base::FilePath& path) const override {
     IncrementAndCompareCounter("on_can_access_file_count");
-    return false;
-  }
-
-  bool OnCanThrottleRequest(const URLRequest& request) const override {
-    IncrementAndCompareCounter("on_can_throttle_request_count");
     return false;
   }
 
@@ -201,10 +202,11 @@ class TestLayeredNetworkDelegate : public LayeredNetworkDelegate {
                                       request_headers.get()));
     OnBeforeSendProxyHeaders(NULL, ProxyInfo(), request_headers.get());
     OnSendHeaders(NULL, *request_headers);
+    OnNetworkBytesSent(*request, 42);
     EXPECT_EQ(OK, OnHeadersReceived(NULL, completion_callback.callback(),
                                     response_headers.get(), NULL, NULL));
     OnResponseStarted(request.get());
-    OnRawBytesRead(*request, 0);
+    OnNetworkBytesReceived(*request, 42);
     OnCompleted(request.get(), false);
     OnURLRequestDestroyed(request.get());
     OnPACScriptError(0, base::string16());
@@ -214,7 +216,6 @@ class TestLayeredNetworkDelegate : public LayeredNetworkDelegate {
     EXPECT_FALSE(OnCanGetCookies(*request, CookieList()));
     EXPECT_FALSE(OnCanSetCookie(*request, std::string(), NULL));
     EXPECT_FALSE(OnCanAccessFile(*request, base::FilePath()));
-    EXPECT_FALSE(OnCanThrottleRequest(*request));
     EXPECT_FALSE(OnCanEnablePrivacyMode(GURL(), GURL()));
     EXPECT_FALSE(OnCancelURLRequestWithPolicyViolatingReferrerHeader(
         *request, GURL(), GURL()));
@@ -283,10 +284,16 @@ class TestLayeredNetworkDelegate : public LayeredNetworkDelegate {
     EXPECT_EQ(1, (*counters_)["on_response_started_count"]);
   }
 
-  void OnRawBytesReadInternal(const URLRequest& request,
-                              int bytes_read) override {
-    ++(*counters_)["on_raw_bytes_read_count"];
-    EXPECT_EQ(1, (*counters_)["on_raw_bytes_read_count"]);
+  void OnNetworkBytesReceivedInternal(const URLRequest& request,
+                                      int64_t bytes_received) override {
+    ++(*counters_)["on_network_bytes_received_count"];
+    EXPECT_EQ(1, (*counters_)["on_network_bytes_received_count"]);
+  }
+
+  void OnNetworkBytesSentInternal(const URLRequest& request,
+                                  int64_t bytes_sent) override {
+    ++(*counters_)["on_network_bytes_sent_count"];
+    EXPECT_EQ(1, (*counters_)["on_network_bytes_sent_count"]);
   }
 
   void OnCompletedInternal(URLRequest* request, bool started) override {
@@ -330,11 +337,6 @@ class TestLayeredNetworkDelegate : public LayeredNetworkDelegate {
                                const base::FilePath& path) const override {
     ++(*counters_)["on_can_access_file_count"];
     EXPECT_EQ(1, (*counters_)["on_can_access_file_count"]);
-  }
-
-  void OnCanThrottleRequestInternal(const URLRequest& request) const override {
-    ++(*counters_)["on_can_throttle_request_count"];
-    EXPECT_EQ(1, (*counters_)["on_can_throttle_request_count"]);
   }
 
   void OnCanEnablePrivacyModeInternal(

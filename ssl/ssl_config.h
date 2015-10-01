@@ -5,7 +5,8 @@
 #ifndef NET_SSL_SSL_CONFIG_H_
 #define NET_SSL_SSL_CONFIG_H_
 
-#include "base/basictypes.h"
+#include <stdint.h>
+
 #include "base/memory/ref_counted.h"
 #include "net/base/net_export.h"
 #include "net/cert/x509_certificate.h"
@@ -21,25 +22,23 @@ namespace net {
 // The most significant byte is |major|, and the least significant byte
 // is |minor|.
 enum {
-  SSL_PROTOCOL_VERSION_SSL3 = 0x0300,
   SSL_PROTOCOL_VERSION_TLS1 = 0x0301,
   SSL_PROTOCOL_VERSION_TLS1_1 = 0x0302,
   SSL_PROTOCOL_VERSION_TLS1_2 = 0x0303,
 };
 
 // Default minimum protocol version.
-NET_EXPORT extern const uint16 kDefaultSSLVersionMin;
+NET_EXPORT extern const uint16_t kDefaultSSLVersionMin;
 
-// For maximum supported protocol version, use
-// SSLClientSocket::GetMaxSupportedSSLVersion().
+// Default maximum protocol version.
+NET_EXPORT extern const uint16_t kDefaultSSLVersionMax;
 
 // Default minimum protocol version that it's acceptable to fallback to.
-NET_EXPORT extern const uint16 kDefaultSSLVersionFallbackMin;
+NET_EXPORT extern const uint16_t kDefaultSSLVersionFallbackMin;
 
 // A collection of SSL-related configuration settings.
 struct NET_EXPORT SSLConfig {
   // Default to revocation checking.
-  // Default to SSL 3.0 ~ default_version_max() on.
   SSLConfig();
   ~SSLConfig();
 
@@ -52,6 +51,11 @@ struct NET_EXPORT SSLConfig {
   // of X509Certificate.
   bool IsAllowedBadCert(const base::StringPiece& der_cert,
                         CertStatus* cert_status) const;
+
+  // Returns the set of flags to use for certificate verification, which is a
+  // bitwise OR of CertVerifier::VerifyFlags that represent this SSLConfig's
+  // configuration.
+  int GetCertVerifyFlags() const;
 
   // rev_checking_enabled is true if online certificate revocation checking is
   // enabled (i.e. OCSP and CRL fetching).
@@ -70,10 +74,9 @@ struct NET_EXPORT SSLConfig {
   bool rev_checking_required_local_anchors;
 
   // The minimum and maximum protocol versions that are enabled.
-  // SSL 3.0 is 0x0300, TLS 1.0 is 0x0301, TLS 1.1 is 0x0302, and so on.
   // (Use the SSL_PROTOCOL_VERSION_xxx enumerators defined above.)
-  // SSL 2.0 is not supported. If version_max < version_min, it means no
-  // protocol versions are enabled.
+  // SSL 2.0 and SSL 3.0 are not supported. If version_max < version_min, it
+  // means no protocol versions are enabled.
   uint16 version_min;
   uint16 version_max;
 
@@ -115,10 +118,8 @@ struct NET_EXPORT SSLConfig {
   // TLS extension is enabled.
   bool signed_cert_timestamps_enabled;
 
-  // require_forward_secrecy, if true, causes only (EC)DHE cipher suites to be
-  // enabled. NOTE: this only applies to server sockets currently, although
-  // that could be extended if needed.
-  bool require_forward_secrecy;
+  // If true, causes only ECDHE cipher suites to be enabled.
+  bool require_ecdhe;
 
   // TODO(wtc): move the following members to a new SSLParams structure.  They
   // are not SSL configuration settings.
@@ -161,17 +162,14 @@ struct NET_EXPORT SSLConfig {
   // requested by the client.
   NextProtoVector next_protos;
 
-  scoped_refptr<X509Certificate> client_cert;
+  // True if renegotiation should be allowed for the default application-level
+  // protocol when the peer negotiates neither ALPN nor NPN.
+  bool renego_allowed_default;
 
-  // Information about how to proceed with fastradio padding.
-  // |fastradio_padding_enabled| determines if the feature is enabled globally.
-  // |fastradio_padding_eligible| determines if the endpoint associated with
-  // this config should use it.
-  // |fastradio_padding_eligible| can be true when |fastradio_padding_enabled|
-  // is false: in this case, fastradio padding would not be enabled, but
-  // metrics can be collected for experiments.
-  bool fastradio_padding_enabled;
-  bool fastradio_padding_eligible;
+  // The list of application-level protocols to enable renegotiation for.
+  NextProtoVector renego_allowed_for_protos;
+
+  scoped_refptr<X509Certificate> client_cert;
 };
 
 }  // namespace net

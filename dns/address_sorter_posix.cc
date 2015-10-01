@@ -19,6 +19,7 @@
 
 #include "base/logging.h"
 #include "base/memory/scoped_vector.h"
+#include "net/base/net_errors.h"
 #include "net/socket/client_socket_factory.h"
 #include "net/udp/datagram_client_socket.h"
 
@@ -303,7 +304,7 @@ void AddressSorterPosix::Sort(const AddressList& list,
           CommonPrefixLength(info->address, src.address()),
           info->src->prefix_length);
     }
-    sort_list.push_back(info.release());
+    sort_list.push_back(info.Pass());
   }
 
   std::stable_sort(sort_list.begin(), sort_list.end(), CompareDestinations);

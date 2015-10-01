@@ -13,6 +13,7 @@
 #include "net/base/net_errors.h"
 #include "net/socket/ssl_socket.h"
 #include "net/socket/stream_socket.h"
+#include "net/ssl/ssl_failure_state.h"
 
 namespace net {
 
@@ -105,7 +106,7 @@ class NET_EXPORT SSLClientSocket : public SSLSocket {
   //   kNextProtoNegotiated:  *proto is set to the negotiated protocol.
   //   kNextProtoNoOverlap:   *proto is set to the first protocol in the
   //                          supported list.
-  virtual NextProtoStatus GetNextProto(std::string* proto) = 0;
+  virtual NextProtoStatus GetNextProto(std::string* proto) const = 0;
 
   static NextProto NextProtoFromString(const std::string& proto_string);
 
@@ -121,44 +122,33 @@ class NET_EXPORT SSLClientSocket : public SSLSocket {
   // sessions.
   static void ClearSessionCache();
 
-  // Get the maximum SSL version supported by the underlying library and
-  // cryptographic implementation.
-  static uint16 GetMaxSupportedSSLVersion();
-
-  virtual bool set_was_npn_negotiated(bool negotiated);
-
-  virtual bool was_spdy_negotiated() const;
-
-  virtual bool set_was_spdy_negotiated(bool negotiated);
-
-  virtual void set_protocol_negotiated(NextProto protocol_negotiated);
-
-  void set_negotiation_extension(SSLNegotiationExtension negotiation_extension);
-
   // Returns the ChannelIDService used by this socket, or NULL if
   // channel ids are not supported.
   virtual ChannelIDService* GetChannelIDService() const = 0;
 
-  // Returns true if a channel ID was sent on this connection.
-  // This may be useful for protocols, like SPDY, which allow the same
-  // connection to be shared between multiple domains, each of which need
-  // a channel ID.
-  //
-  // Public for ssl_client_socket_openssl_unittest.cc.
-  virtual bool WasChannelIDSent() const;
+  // Returns the state of the handshake when it failed, or |SSL_FAILURE_NONE| if
+  // the handshake succeeded. This is used to classify causes of the TLS version
+  // fallback.
+  virtual SSLFailureState GetSSLFailureState() const = 0;
+
+ protected:
+  void set_negotiation_extension(
+      SSLNegotiationExtension negotiation_extension) {
+    negotiation_extension_ = negotiation_extension;
+  }
+
+  void set_signed_cert_timestamps_received(
+      bool signed_cert_timestamps_received) {
+    signed_cert_timestamps_received_ = signed_cert_timestamps_received;
+  }
+
+  void set_stapled_ocsp_response_received(bool stapled_ocsp_response_received) {
+    stapled_ocsp_response_received_ = stapled_ocsp_response_received;
+  }
 
   // Record which TLS extension was used to negotiate protocol and protocol
   // chosen in a UMA histogram.
   void RecordNegotiationExtension();
-
- protected:
-  virtual void set_channel_id_sent(bool channel_id_sent);
-
-  virtual void set_signed_cert_timestamps_received(
-      bool signed_cert_timestamps_received);
-
-  virtual void set_stapled_ocsp_response_received(
-      bool stapled_ocsp_response_received);
 
   // Records histograms for channel id support during full handshakes - resumed
   // handshakes are ignored.
@@ -184,19 +174,10 @@ class NET_EXPORT SSLClientSocket : public SSLSocket {
   // inadequate TLS version.
   static bool IsTLSVersionAdequateForHTTP2(const SSLConfig& ssl_config);
 
-  // Serializes |next_protos| in the wire format for ALPN: protocols are listed
-  // in order, each prefixed by a one-byte length.  Any HTTP/2 protocols in
-  // |next_protos| are ignored if |can_advertise_http2| is false.
+  // Serialize |next_protos| in the wire format for ALPN and NPN: protocols are
+  // listed in order, each prefixed by a one-byte length.
   static std::vector<uint8_t> SerializeNextProtos(
-      const NextProtoVector& next_protos,
-      bool can_advertise_http2);
-
-  // For unit testing only.
-  // Returns the unverified certificate chain as presented by server.
-  // Note that chain may be different than the verified chain returned by
-  // StreamSocket::GetSSLInfo().
-  virtual scoped_refptr<X509Certificate> GetUnverifiedServerCertificateChain()
-      const = 0;
+      const NextProtoVector& next_protos);
 
  private:
   FRIEND_TEST_ALL_PREFIXES(SSLClientSocket, SerializeNextProtos);
@@ -210,14 +191,6 @@ class NET_EXPORT SSLClientSocket : public SSLSocket {
   FRIEND_TEST_ALL_PREFIXES(SSLClientSocketTest,
                            VerifyServerChainProperlyOrdered);
 
-  // True if NPN was responded to, independent of selecting SPDY or HTTP.
-  bool was_npn_negotiated_;
-  // True if NPN successfully negotiated SPDY.
-  bool was_spdy_negotiated_;
-  // Protocol that we negotiated with the server.
-  NextProto protocol_negotiated_;
-  // True if a channel ID was sent.
-  bool channel_id_sent_;
   // True if SCTs were received via a TLS extension.
   bool signed_cert_timestamps_received_;
   // True if a stapled OCSP response was received.

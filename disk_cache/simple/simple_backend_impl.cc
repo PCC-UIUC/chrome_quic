@@ -18,7 +18,7 @@
 #include "base/lazy_instance.h"
 #include "base/location.h"
 #include "base/metrics/field_trial.h"
-#include "base/metrics/histogram.h"
+#include "base/metrics/histogram_macros.h"
 #include "base/metrics/sparse_histogram.h"
 #include "base/single_thread_task_runner.h"
 #include "base/sys_info.h"
@@ -544,8 +544,7 @@ scoped_ptr<Backend::Iterator> SimpleBackendImpl::CreateIterator() {
   return scoped_ptr<Iterator>(new SimpleIterator(AsWeakPtr()));
 }
 
-void SimpleBackendImpl::GetStats(
-    std::vector<std::pair<std::string, std::string> >* stats) {
+void SimpleBackendImpl::GetStats(base::StringPairs* stats) {
   std::pair<std::string, std::string> item;
   item.first = "Cache type";
   item.second = "Simple Cache";
@@ -735,7 +734,9 @@ void SimpleBackendImpl::DoomEntriesComplete(
 
 // static
 void SimpleBackendImpl::FlushWorkerPoolForTesting() {
-  g_sequenced_worker_pool.Get().FlushForTesting();
+  // We only need to do this if we there is an active task runner.
+  if (base::ThreadTaskRunnerHandle::IsSet())
+    g_sequenced_worker_pool.Get().FlushForTesting();
 }
 
 }  // namespace disk_cache

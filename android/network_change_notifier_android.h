@@ -6,8 +6,8 @@
 #define NET_ANDROID_NETWORK_CHANGE_NOTIFIER_ANDROID_H_
 
 #include "base/android/jni_android.h"
-#include "base/basictypes.h"
 #include "base/compiler_specific.h"
+#include "base/macros.h"
 #include "net/android/network_change_notifier_delegate_android.h"
 #include "net/base/network_change_notifier.h"
 
@@ -49,11 +49,14 @@ class NET_EXPORT_PRIVATE NetworkChangeNotifierAndroid
   ConnectionType GetCurrentConnectionType() const override;
   // Requires ACCESS_WIFI_STATE permission in order to provide precise WiFi link
   // speed.
-  double GetCurrentMaxBandwidth() const override;
+  void GetCurrentMaxBandwidthAndConnectionType(
+      double* max_bandwidth_mbps,
+      ConnectionType* connection_type) const override;
 
   // NetworkChangeNotifierDelegateAndroid::Observer:
   void OnConnectionTypeChanged() override;
-  void OnMaxBandwidthChanged(double max_bandwidth_mbps) override;
+  void OnMaxBandwidthChanged(double max_bandwidth_mbps,
+                             ConnectionType type) override;
 
   static bool Register(JNIEnv* env);
 

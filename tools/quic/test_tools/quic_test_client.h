@@ -48,7 +48,7 @@ class MockableQuicClient : public QuicClient {
 
   ~MockableQuicClient() override;
   QuicPacketWriter* CreateQuicPacketWriter() override;
-  QuicConnectionId GenerateConnectionId() override;
+  QuicConnectionId GenerateNewConnectionId() override;
   void UseWriter(QuicPacketWriterWrapper* writer);
   void UseConnectionId(QuicConnectionId connection_id);
   void SendCachedNetworkParamaters(
@@ -89,9 +89,9 @@ class QuicTestClient : public SimpleClient,
   void SetUserAgentID(const std::string& user_agent_id);
 
   // Wraps data in a quic packet and sends it.
-  ssize_t SendData(std::string data, bool last_data);
+  ssize_t SendData(const std::string& data, bool last_data);
   // As above, but |delegate| will be notified when |data| is ACKed.
-  ssize_t SendData(std::string data,
+  ssize_t SendData(const std::string& data,
                    bool last_data,
                    QuicAckNotifier::DelegateInterface* delegate);
 
@@ -99,13 +99,18 @@ class QuicTestClient : public SimpleClient,
   // Clears any outstanding state and sends a simple GET of 'uri' to the
   // server.  Returns 0 if the request failed and no bytes were written.
   ssize_t SendRequest(const std::string& uri) override;
+  // Sends requests for all the urls and waits for the responses.  To process
+  // the individual responses as they are returned, the caller should use the
+  // set the response_listener on the client().
+  void SendRequestsAndWaitForResponses(
+      const std::vector<std::string>& url_list);
   ssize_t SendMessage(const HTTPMessage& message) override;
   std::string SendCustomSynchronousRequest(const HTTPMessage& message) override;
   std::string SendSynchronousRequest(const std::string& uri) override;
   void Connect() override;
   void ResetConnection() override;
   void Disconnect() override;
-  IPEndPoint LocalSocketAddress() const override;
+  IPEndPoint local_address() const override;
   void ClearPerRequestState() override;
   void WaitForResponseForMs(int timeout_ms) override;
   void WaitForInitialResponseForMs(int timeout_ms) override;
@@ -127,6 +132,7 @@ class QuicTestClient : public SimpleClient,
   // DFATAL if called by users of SimpleClient.
   ssize_t SendAndWaitForResponse(const void* buffer, size_t size) override;
   void Bind(IPEndPoint* local_address) override;
+  void MigrateSocket(const IPAddressNumber& new_host) override;
   std::string SerializeMessage(const HTTPMessage& message) override;
   IPAddressNumber bind_to_address() const override;
   void set_bind_to_address(IPAddressNumber address) override;
@@ -145,6 +151,15 @@ class QuicTestClient : public SimpleClient,
 
   // Returns nullptr if the maximum number of streams have already been created.
   QuicSpdyClientStream* GetOrCreateStream();
+
+  // Calls GetorCreateStream(), sends the request on the stream, and
+  // stores the reuest in case it needs to be resent.  If |headers| is
+  // null, only the body will be sent on the stream.
+  ssize_t GetOrCreateStreamAndSendRequest(
+      const BalsaHeaders* headers,
+      StringPiece body,
+      bool fin,
+      QuicAckNotifier::DelegateInterface* delegate);
 
   QuicRstStreamErrorCode stream_error() { return stream_error_; }
   QuicErrorCode connection_error();
@@ -178,6 +193,29 @@ class QuicTestClient : public SimpleClient,
   void set_client(MockableQuicClient* client) { client_.reset(client); }
 
  private:
+  class TestClientDataToResend : public QuicClient::QuicDataToResend {
+   public:
+    TestClientDataToResend(BalsaHeaders* headers,
+                           StringPiece body,
+                           bool fin,
+                           QuicTestClient* test_client,
+                           QuicAckNotifier::DelegateInterface* delegate)
+        : QuicClient::QuicDataToResend(headers, body, fin),
+          test_client_(test_client),
+          delegate_(delegate) {}
+
+    ~TestClientDataToResend() override {}
+
+    void Resend() override;
+
+   protected:
+    QuicTestClient* test_client_;
+    QuicAckNotifier::DelegateInterface* delegate_;
+  };
+
+  // Given a uri, creates a simple HTTPMessage request message for testing.
+  static void FillInRequest(const std::string& uri, HTTPMessage* message);
+
   EpollServer epoll_server_;
   scoped_ptr<MockableQuicClient> client_;  // The actual client
   QuicSpdyClientStream* stream_;

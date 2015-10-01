@@ -11,6 +11,7 @@
 
 #include "base/compiler_specific.h"
 #include "base/files/file_path.h"
+#include "base/memory/ref_counted.h"
 #include "base/memory/scoped_ptr.h"
 #include "net/base/host_port_pair.h"
 #include "net/ssl/ssl_client_cert_type.h"
@@ -25,6 +26,7 @@ namespace net {
 
 class AddressList;
 class ScopedPortException;
+class X509Certificate;
 
 // The base class of Test server implementation.
 class BaseTestServer {
@@ -65,6 +67,10 @@ class BaseTestServer {
       // Causes the testserver to use a hostname that is a domain
       // instead of an IP.
       CERT_COMMON_NAME_IS_DOMAIN,
+
+      // A certificate with invalid notBefore and notAfter times. Windows'
+      // certificate library will not parse this certificate.
+      CERT_BAD_VALIDITY,
     };
 
     // OCSPStatus enumerates the types of OCSP response that the testserver
@@ -217,6 +223,15 @@ class BaseTestServer {
 
     // Whether to send a fatal alert immediately after completing the handshake.
     bool alert_after_handshake;
+
+    // If true, disables channel ID on the server.
+    bool disable_channel_id;
+
+    // If true, disables extended master secret tls extension.
+    bool disable_extended_master_secret;
+
+    // List of token binding params that the server supports and will negotiate.
+    std::vector<int> supported_token_binding_params;
   };
 
   // Pass as the 'host' parameter during construction to server on 127.0.0.1
@@ -262,9 +277,17 @@ class BaseTestServer {
     ws_basic_auth_ = ws_basic_auth;
   }
 
+  // Disable creation of anonymous FTP user.
+  void set_no_anonymous_ftp_user(bool no_anonymous_ftp_user) {
+    no_anonymous_ftp_user_ = no_anonymous_ftp_user;
+  }
+
   // Marks the root certificate of an HTTPS test server as trusted for
   // the duration of tests.
   bool LoadTestRootCert() const WARN_UNUSED_RESULT;
+
+  // Returns the certificate that the server is using.
+  scoped_refptr<X509Certificate> GetCertificate() const;
 
  protected:
   virtual ~BaseTestServer();
@@ -330,6 +353,9 @@ class BaseTestServer {
 
   // Is WebSocket basic HTTP authentication enabled?
   bool ws_basic_auth_;
+
+  // Disable creation of anonymous FTP user?
+  bool no_anonymous_ftp_user_;
 
   scoped_ptr<ScopedPortException> allowed_port_;
 

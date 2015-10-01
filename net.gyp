@@ -5,14 +5,13 @@
 {
   'variables': {
     'chromium_code': 1,
-
     'linux_link_kerberos%': 0,
     'conditions': [
-      ['chromeos==1 or embedded==1 or OS=="android" or OS=="ios"', {
-        # Disable Kerberos on ChromeOS, Android and iOS, at least for now.
+      ['chromeos==1 or embedded==1 or OS=="ios"', {
+        # Disable Kerberos on ChromeOS and iOS, at least for now.
         # It needs configuration (krb5.conf and so on).
         'use_kerberos%': 0,
-      }, {  # chromeos == 0 and embedded==0 and OS!="android" and OS!="ios"
+      }, {  # chromeos == 0 and embedded==0 and OS!="ios"
         'use_kerberos%': 1,
       }],
       ['OS=="android" and target_arch != "ia32"', {
@@ -175,7 +174,6 @@
           ],
           'dependencies': [
             'net_javatests',
-            'net_test_jni_headers',
           ],
         }],
         [ 'use_nss_certs != 1', {
@@ -183,7 +181,6 @@
             'cert/nss_cert_database_unittest.cc',
             'cert/nss_cert_database_chromeos_unittest.cc',
             'cert/nss_profile_filter_chromeos_unittest.cc',
-            'ssl/client_cert_store_chromeos_unittest.cc',
             'ssl/client_cert_store_nss_unittest.cc',
           ],
         }],
@@ -221,12 +218,19 @@
           'defines': [
             'USE_KERBEROS',
           ],
-        }, { # use_kerberos == 0
+        }],
+        [ 'use_kerberos==0 or OS == "android"', {
+          # These are excluded on Android, because the actual Kerberos support,
+          # which these test, is in a separate app on Android.
           'sources!': [
             'http/http_auth_gssapi_posix_unittest.cc',
-            'http/http_auth_handler_negotiate_unittest.cc',
             'http/mock_gssapi_library_posix.cc',
             'http/mock_gssapi_library_posix.h',
+          ],
+        }],
+       [ 'use_kerberos==0', {
+          'sources!': [
+            'http/http_auth_handler_negotiate_unittest.cc',
           ],
         }],
         [ 'use_openssl == 1 or (desktop_linux == 0 and chromeos == 0 and OS != "ios")', {
@@ -290,16 +294,14 @@
             ],
           },
         ],
-        # Always need use_v8_in_net to be 1 to run gyp on Android, so just
-        # remove net_unittest's dependency on v8 when using icu alternatives
-        # instead of setting use_v8_in_net to 0.
-        [ 'use_v8_in_net==1 and use_icu_alternatives_on_android==0', {
+        [ 'use_v8_in_net==1', {
             'dependencies': [
               'net_with_v8',
             ],
           }, {  # else: !use_v8_in_net
             'sources!': [
               'proxy/proxy_resolver_v8_tracing_unittest.cc',
+              'proxy/proxy_resolver_v8_tracing_wrapper_unittest.cc',
               'proxy/proxy_resolver_v8_unittest.cc',
             ],
           },
@@ -316,10 +318,10 @@
             'sources!': [
               'dns/host_resolver_mojo_unittest.cc',
               'dns/mojo_host_resolver_impl_unittest.cc',
-              'proxy/load_state_change_coalescer_unittest.cc',
               'proxy/mojo_proxy_resolver_factory_impl_unittest.cc',
               'proxy/mojo_proxy_resolver_impl_unittest.cc',
-              'proxy/proxy_resolver_mojo_unittest.cc',
+              'proxy/mojo_proxy_resolver_v8_tracing_bindings_unittest.cc',
+              'proxy/proxy_resolver_factory_mojo_unittest.cc',
               'proxy/proxy_service_mojo_unittest.cc',
             ],
           },
@@ -361,6 +363,8 @@
                     'data/ssl/certificates/',
                     'data/test.html',
                     'data/url_request_unittest/',
+                    'data/verify_name_match_unittest/names/',
+                    'data/parse_certificate_unittest/',
                   ],
                   'test_data_prefix': 'net',
                 },
@@ -391,7 +395,6 @@
               # iOS.
               # OS is not "linux" or "freebsd" or "openbsd".
               'socket/unix_domain_client_socket_posix_unittest.cc',
-              'socket/unix_domain_listen_socket_posix_unittest.cc',
               'socket/unix_domain_server_socket_posix_unittest.cc',
 
               # See bug http://crbug.com/344533.
@@ -405,16 +408,6 @@
             '../testing/android/native_test.gyp:native_test_native_code',
           ]
         }],
-        [ 'use_icu_alternatives_on_android == 1', {
-            'dependencies!': [
-              '../base/base.gyp:base_i18n',
-            ],
-            'sources!': [
-              'base/filename_util_unittest.cc',
-              'base/net_util_icu_unittest.cc',
-            ],
-          },
-        ],
         ['use_v8_in_net==1 and v8_use_external_startup_data==1', {
           'dependencies': [
             '../gin/gin.gyp:gin',
@@ -448,11 +441,14 @@
         '../testing/gtest.gyp:gtest',
         '../url/url.gyp:url_lib',
         'net',
+        'net_extras',
         'net_test_support',
       ],
       'sources': [
+        'base/mime_sniffer_perftest.cc',
         'cookies/cookie_monster_perftest.cc',
         'disk_cache/blockfile/disk_cache_perftest.cc',
+        'extras/sqlite/sqlite_persistent_cookie_store_perftest.cc',
         'proxy/proxy_resolver_perftest.cc',
         'udp/udp_socket_perftest.cc',
         'websockets/websocket_frame_perftest.cc',
@@ -506,6 +502,7 @@
         # TODO(mmenke):  This depends on icu, figure out a way to build tests
         #                without icu.
         '../base/base.gyp:test_support_base',
+        '../crypto/crypto.gyp:crypto',
         '../testing/gtest.gyp:gtest',
         '../testing/gmock.gyp:gmock',
       ],
@@ -538,12 +535,12 @@
         'dns/mock_mdns_socket_factory.h',
         'http/http_transaction_test_util.cc',
         'http/http_transaction_test_util.h',
-        'log/captured_net_log_entry.cc',
-        'log/captured_net_log_entry.h',
         'log/test_net_log.cc',
         'log/test_net_log.h',
-        'log/capturing_net_log_observer.cc',
-        'log/capturing_net_log_observer.h',
+        'log/test_net_log_entry.cc',
+        'log/test_net_log_entry.h',
+        'log/test_net_log_util.cc',
+        'log/test_net_log_util.h',
         'proxy/mock_proxy_resolver.cc',
         'proxy/mock_proxy_resolver.h',
         'proxy/mock_proxy_script_fetcher.cc',
@@ -555,6 +552,8 @@
         'test/cert_test_util.cc',
         'test/cert_test_util.h',
         'test/cert_test_util_nss.cc',
+        'test/channel_id_test_util.cc',
+        'test/channel_id_test_util.h',
         'test/ct_test_util.cc',
         'test/ct_test_util.h',
         'test/embedded_test_server/embedded_test_server.cc',
@@ -565,6 +564,10 @@
         'test/embedded_test_server/http_request.h',
         'test/embedded_test_server/http_response.cc',
         'test/embedded_test_server/http_response.h',
+        'test/embedded_test_server/stream_listen_socket.cc',
+        'test/embedded_test_server/stream_listen_socket.h',
+        'test/embedded_test_server/tcp_listen_socket.cc',
+        'test/embedded_test_server/tcp_listen_socket.h',
         'test/event_waiter.h',
         'test/net_test_suite.cc',
         'test/net_test_suite.h',
@@ -576,11 +579,9 @@
         'test/spawned_test_server/local_test_server.h',
         'test/spawned_test_server/local_test_server_posix.cc',
         'test/spawned_test_server/local_test_server_win.cc',
-        'test/spawned_test_server/remote_test_server.cc',
-        'test/spawned_test_server/remote_test_server.h',
         'test/spawned_test_server/spawned_test_server.h',
-        'test/spawned_test_server/spawner_communicator.cc',
-        'test/spawned_test_server/spawner_communicator.h',
+        'test/url_request/ssl_certificate_error_job.cc',
+        'test/url_request/ssl_certificate_error_job.h',
         'test/url_request/url_request_failed_job.cc',
         'test/url_request/url_request_failed_job.h',
         'test/url_request/url_request_mock_data_job.cc',
@@ -597,8 +598,18 @@
           'dependencies': [
             '../third_party/protobuf/protobuf.gyp:py_proto',
           ],
+        }, {
+          'sources!': [
+            'test/spawned_test_server/base_test_server.cc',
+            'test/spawned_test_server/base_test_server.h',
+            'test/spawned_test_server/local_test_server.cc',
+            'test/spawned_test_server/local_test_server.h',
+            'test/spawned_test_server/local_test_server_posix.cc',
+            'test/spawned_test_server/local_test_server_win.cc',
+            'test/spawned_test_server/spawned_test_server.h',
+          ],
         }],
-        ['use_openssl == 0 and (use_nss_certs == 1 or OS == "ios")', {
+        ['use_nss_certs == 1 or OS == "ios"', {
           'conditions': [
             [ 'desktop_linux == 1 or chromeos == 1', {
               'dependencies': [
@@ -622,8 +633,15 @@
             }],
           ],
         }],
-        ['OS != "android"', {
-          'sources!': [
+        ['OS == "android"', {
+          'dependencies': [
+            'net_test_jni_headers',
+          ],
+          'sources': [
+            'test/android/net_test_jni_onload.cc',
+            'test/android/net_test_jni_onload.h',
+            'test/embedded_test_server/android/embedded_test_server_android.cc',
+            'test/embedded_test_server/android/embedded_test_server_android.h',
             'test/spawned_test_server/remote_test_server.cc',
             'test/spawned_test_server/remote_test_server.h',
             'test/spawned_test_server/spawner_communicator.cc',
@@ -765,8 +783,8 @@
         'tools/balsa/split.cc',
         'tools/balsa/split.h',
         'tools/balsa/string_piece_utils.h',
-        'tools/quic/spdy_utils.cc',
-        'tools/quic/spdy_utils.h',
+        'tools/quic/spdy_balsa_utils.cc',
+        'tools/quic/spdy_balsa_utils.h',
       ],
     },
     {
@@ -778,17 +796,9 @@
         'net_test_support',
       ],
       'sources': [
-        'tools/dump_cache/cache_dumper.cc',
-        'tools/dump_cache/cache_dumper.h',
         'tools/dump_cache/dump_cache.cc',
         'tools/dump_cache/dump_files.cc',
         'tools/dump_cache/dump_files.h',
-        'tools/dump_cache/simple_cache_dumper.cc',
-        'tools/dump_cache/simple_cache_dumper.h',
-        'tools/dump_cache/url_to_filename_encoder.cc',
-        'tools/dump_cache/url_to_filename_encoder.h',
-        'tools/dump_cache/url_utilities.cc',
-        'tools/dump_cache/url_utilities.h',
       ],
       # TODO(jschuh): crbug.com/167187 fix size_t to int truncations.
       'msvs_disabled_warnings': [4267, ],
@@ -804,6 +814,8 @@
         'net_quic_proto',
       ],
       'sources': [
+        'tools/quic/quic_client_base.cc',
+        'tools/quic/quic_client_base.h',
         'tools/quic/quic_client_session.cc',
         'tools/quic/quic_client_session.h',
         'tools/quic/quic_dispatcher.cc',
@@ -855,6 +867,8 @@
             'proxy/proxy_resolver_v8.h',
             'proxy/proxy_resolver_v8_tracing.cc',
             'proxy/proxy_resolver_v8_tracing.h',
+            'proxy/proxy_resolver_v8_tracing_wrapper.cc',
+            'proxy/proxy_resolver_v8_tracing_wrapper.h',
             'proxy/proxy_service_v8.cc',
             'proxy/proxy_service_v8.h',
           ],
@@ -887,8 +901,8 @@
             'proxy/in_process_mojo_proxy_resolver_factory.cc',
             'proxy/in_process_mojo_proxy_resolver_factory.h',
             'proxy/mojo_proxy_resolver_factory.h',
-            'proxy/proxy_resolver_mojo.cc',
-            'proxy/proxy_resolver_mojo.h',
+            'proxy/proxy_resolver_factory_mojo.cc',
+            'proxy/proxy_resolver_factory_mojo.h',
             'proxy/proxy_service_mojo.cc',
             'proxy/proxy_service_mojo.h',
           ],
@@ -916,12 +930,11 @@
           'sources': [
             'dns/host_resolver_mojo.cc',
             'dns/host_resolver_mojo.h',
-            'proxy/load_state_change_coalescer.cc',
-            'proxy/load_state_change_coalescer.h',
             'proxy/mojo_proxy_resolver_factory_impl.cc',
             'proxy/mojo_proxy_resolver_factory_impl.h',
             'proxy/mojo_proxy_resolver_impl.cc',
             'proxy/mojo_proxy_resolver_impl.h',
+            'proxy/mojo_proxy_resolver_v8_tracing_bindings.h',
           ],
           'dependencies': [
             'mojo_type_converters',
@@ -1177,10 +1190,6 @@
             'net',
           ],
           'sources': [
-            'tools/dump_cache/url_to_filename_encoder.cc',
-            'tools/dump_cache/url_to_filename_encoder.h',
-            'tools/dump_cache/url_utilities.cc',
-            'tools/dump_cache/url_utilities.h',
             'tools/flip_server/acceptor_thread.cc',
             'tools/flip_server/acceptor_thread.h',
             'tools/flip_server/constants.h',
@@ -1208,6 +1217,10 @@
             'tools/flip_server/spdy_util.h',
             'tools/flip_server/streamer_interface.cc',
             'tools/flip_server/streamer_interface.h',
+            'tools/flip_server/url_to_filename_encoder.cc',
+            'tools/flip_server/url_to_filename_encoder.h',
+            'tools/flip_server/url_utilities.cc',
+            'tools/flip_server/url_utilities.h',
           ],
         },
         {
@@ -1228,6 +1241,8 @@
             'tools/flip_server/mem_cache_test.cc',
             'tools/flip_server/run_all_tests.cc',
             'tools/flip_server/spdy_interface_test.cc',
+            'tools/flip_server/url_to_filename_encoder_unittest.cc',
+            'tools/flip_server/url_utilities_unittest.cc',
           ],
         },
         {
@@ -1314,7 +1329,6 @@
             'disable_ftp_support': 1,
             'disable_file_support': 1,
             'enable_websockets': 0,
-            'use_icu_alternatives_on_android': 1,
           },
           'dependencies': [
             '../url/url.gyp:url_lib_use_icu_alternatives_on_android',
@@ -1338,7 +1352,9 @@
             'android/java/src/org/chromium/net/AndroidKeyStore.java',
             'android/java/src/org/chromium/net/AndroidNetworkLibrary.java',
             'android/java/src/org/chromium/net/AndroidPrivateKey.java',
+            'android/java/src/org/chromium/net/AndroidTrafficStats.java',
             'android/java/src/org/chromium/net/GURLUtils.java',
+            'android/java/src/org/chromium/net/HttpNegotiateAuthenticator.java',
             'android/java/src/org/chromium/net/NetStringUtil.java',
             'android/java/src/org/chromium/net/NetworkChangeNotifier.java',
             'android/java/src/org/chromium/net/ProxyChangeListener.java',
@@ -1354,9 +1370,11 @@
           'type': 'none',
           'sources': [
             'android/javatests/src/org/chromium/net/AndroidKeyStoreTestUtil.java',
+            'test/android/javatests/src/org/chromium/net/test/EmbeddedTestServer.java',
+            'test/android/javatests/src/org/chromium/net/test/DummySpnegoAuthenticator.java',
           ],
           'variables': {
-            'jni_gen_package': 'net',
+            'jni_gen_package': 'net/test',
           },
           'includes': [ '../build/jni_generator.gypi' ],
         },
@@ -1374,6 +1392,7 @@
             'net_errors_java',
             'private_key_types_java',
             'remote_android_keystore_aidl',
+            'traffic_stats_error_java',
           ],
           'includes': [ '../build/java.gypi' ],
         },
@@ -1396,8 +1415,25 @@
           'type': 'none',
           'variables': {
             'java_in_dir': '../net/test/android/javatests',
+            # TODO(jbudorick): remove chromium_code: 0 line once crbug.com/488192 is fixed.
+            'chromium_code': 0,
           },
+          'dependencies': [
+            'net_java',
+            'net_test_support',
+            'url_request_failed_job_java',
+            '../base/base.gyp:base_java',
+            '../third_party/android_tools/android_tools.gyp:legacy_http_javalib',
+          ],
           'includes': [ '../build/java.gypi' ],
+        },
+        {
+          'target_name': 'url_request_failed_job_java',
+          'type': 'none',
+          'variables': {
+            'source_file': 'test/url_request/url_request_failed_job.h',
+          },
+          'includes': [ '../build/android/java_cpp_enum.gypi' ],
         },
         {
           'target_name': 'net_javatests',
@@ -1457,11 +1493,20 @@
           'includes': [ '../build/android/java_cpp_enum.gypi' ],
         },
         {
+          'target_name': 'traffic_stats_error_java',
+          'type': 'none',
+          'variables': {
+            'source_file': 'android/traffic_stats.cc',
+          },
+          'includes': [ '../build/android/java_cpp_enum.gypi' ],
+        },
+        {
           'target_name': 'net_unittests_apk',
           'type': 'none',
           'dependencies': [
             'net_java',
             'net_javatests',
+            'net_java_test_support',
             'net_unittests',
           ],
           'conditions': [
@@ -1482,6 +1527,9 @@
           ],
           'variables': {
             'test_suite_name': 'net_unittests',
+            'isolate_file': 'net_unittests.isolate',
+            'android_manifest_path': 'android/unittest_support/AndroidManifest.xml',
+            'resource_dir': 'android/unittest_support/res',
             'conditions': [
               ['v8_use_external_startup_data==1', {
                 'asset_location': '<(PRODUCT_DIR)/net_unittests_apk/assets',
@@ -1489,15 +1537,32 @@
                   '<(PRODUCT_DIR)/net_unittests_apk/assets/natives_blob.bin',
                   '<(PRODUCT_DIR)/net_unittests_apk/assets/snapshot_blob.bin',
                 ],
-                'inputs': [
-                  '<(PRODUCT_DIR)/natives_blob.bin',
-                  '<(PRODUCT_DIR)/snapshot_blob.bin',
-                ],
               }],
             ],
           },
           'includes': [ '../build/apk_test.gypi' ],
         },
+        {
+          'target_name': 'net_junit_tests',
+          'type': 'none',
+          'dependencies': [
+            'net_java',
+            '../base/base.gyp:base',
+            '../base/base.gyp:base_java_test_support',
+            '../base/base.gyp:base_junit_test_support',
+            '../testing/android/junit/junit_test.gyp:junit_test_support',
+          ],
+          'variables': {
+            'main_class': 'org.chromium.testing.local.JunitTestMain',
+            'src_paths': [
+              'android/junit/',
+            ],
+          },
+          'includes': [
+            '../build/host_jar.gypi',
+          ],
+        },
+  
       ],
     }],
     ['OS == "android" or OS == "linux"', {

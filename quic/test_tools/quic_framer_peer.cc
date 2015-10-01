@@ -11,12 +11,12 @@ namespace net {
 namespace test {
 
 // static
-QuicPacketSequenceNumber QuicFramerPeer::CalculatePacketSequenceNumberFromWire(
+QuicPacketNumber QuicFramerPeer::CalculatePacketNumberFromWire(
     QuicFramer* framer,
-    QuicSequenceNumberLength sequence_number_length,
-    QuicPacketSequenceNumber packet_sequence_number) {
-  return framer->CalculatePacketSequenceNumberFromWire(sequence_number_length,
-                                                       packet_sequence_number);
+    QuicPacketNumberLength packet_number_length,
+    QuicPacketNumber packet_packet_number) {
+  return framer->CalculatePacketNumberFromWire(packet_number_length,
+                                               packet_packet_number);
 }
 
 // static
@@ -25,17 +25,20 @@ void QuicFramerPeer::SetLastSerializedConnectionId(
   framer->last_serialized_connection_id_ = connection_id;
 }
 
-void QuicFramerPeer::SetLastSequenceNumber(
+// static
+void QuicFramerPeer::SetLastPacketNumber(
     QuicFramer* framer,
-    QuicPacketSequenceNumber packet_sequence_number) {
-  framer->last_sequence_number_ = packet_sequence_number;
+    QuicPacketNumber packet_packet_number) {
+  framer->last_packet_number_ = packet_packet_number;
 }
 
+// static
 void QuicFramerPeer::SetPerspective(QuicFramer* framer,
                                     Perspective perspective) {
   framer->perspective_ = perspective;
 }
 
+// static
 void QuicFramerPeer::SwapCrypters(QuicFramer* framer1, QuicFramer* framer2) {
   for (int i = ENCRYPTION_NONE; i < NUM_ENCRYPTION_LEVELS; i++) {
     framer1->encrypter_[i].swap(framer2->encrypter_[i]);
@@ -57,7 +60,7 @@ void QuicFramerPeer::SwapCrypters(QuicFramer* framer1, QuicFramer* framer2) {
   framer1->alternative_decrypter_latch_ = framer2_latch;
 }
 
-// static.
+// static
 QuicEncrypter* QuicFramerPeer::GetEncrypter(QuicFramer* framer,
                                             EncryptionLevel level) {
   return framer->encrypter_[level].get();

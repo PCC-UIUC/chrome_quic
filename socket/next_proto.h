@@ -28,14 +28,12 @@ enum NextProto {
   kProtoSPDYHistogramOffset = kProtoDeprecatedSPDY2,
   kProtoSPDY3 = 101,
   kProtoSPDY31 = 102,
-  kProtoSPDY4_14 = 103,  // HTTP/2 draft-14, designated implementation draft.
-  kProtoSPDY4MinimumVersion = kProtoSPDY4_14,
-  // kProtoSPDY4_15 = 104,  // HTTP/2 draft-15
-  // kProtoSPDY4_16 = 105,  // HTTP/2 draft-16
-  // kProtoSPDY4_17 = 106,  // HTTP/2 draft-17
-  kProtoSPDY4 = 107,  // HTTP/2.  TODO(bnc):  Add RFC number when published.
-  kProtoSPDY4MaximumVersion = kProtoSPDY4,
-  kProtoSPDYMaximumVersion = kProtoSPDY4MaximumVersion,
+  // kProtoHTTP2_14 = 103,  // HTTP/2 draft-14
+  // kProtoHTTP2_15 = 104,  // HTTP/2 draft-15
+  // kProtoHTTP2_16 = 105,  // HTTP/2 draft-16
+  // kProtoHTTP2_17 = 106,  // HTTP/2 draft-17
+  kProtoHTTP2 = 107,  // HTTP/2, see https://tools.ietf.org/html/rfc7540.
+  kProtoSPDYMaximumVersion = kProtoHTTP2,
 
   kProtoQUIC1SPDY3 = 200,
 
@@ -56,6 +54,12 @@ NET_EXPORT NextProtoVector NextProtosSpdy31();
 // Control SPDY/3.1 and HTTP/2 separately.
 NET_EXPORT NextProtoVector NextProtosWithSpdyAndQuic(bool spdy_enabled,
                                                      bool quic_enabled);
+
+// Returns true if |next_proto| is a version of SPDY or HTTP/2.
+bool NextProtoIsSPDY(NextProto next_proto);
+
+// Remove HTTP/2 from |next_protos|.
+NET_EXPORT void DisableHTTP2(NextProtoVector* next_protos);
 
 }  // namespace net
 

@@ -92,11 +92,11 @@
 // Note that our definition of HTML payload is much stricter than IE's
 // definition and roughly the same as Firefox's definition.
 
+#include <stdint.h>
 #include <string>
 
 #include "net/base/mime_sniffer.h"
 
-#include "base/basictypes.h"
 #include "base/logging.h"
 #include "base/metrics/histogram.h"
 #include "base/strings/string_util.h"
@@ -162,10 +162,6 @@ static const MagicNumber kMagicNumbers[] = {
   MAGIC_NUMBER("audio/mpeg", "ID3")
   MAGIC_NUMBER("image/webp", "RIFF....WEBPVP8 ")
   MAGIC_NUMBER("video/webm", "\x1A\x45\xDF\xA3")
-  // TODO(abarth): we don't handle partial byte matches yet
-  // MAGIC_NUMBER("video/mpeg", "\x00\x00\x01\xB")
-  // MAGIC_NUMBER("audio/mpeg", "\xFF\xE")
-  // MAGIC_NUMBER("audio/mpeg", "\xFF\xF")
   MAGIC_NUMBER("application/zip", "PK\x03\x04")
   MAGIC_NUMBER("application/x-rar-compressed", "Rar!\x1A\x07\x00")
   MAGIC_NUMBER("application/x-msmetafile", "\xD7\xCD\xC6\x9A")
@@ -348,8 +344,10 @@ static bool MatchMagicNumber(const char* content,
   bool match = false;
   if (magic_entry.is_string) {
     if (content_strlen >= len) {
-      // String comparisons are case-insensitive
-      match = (base::strncasecmp(magic_entry.magic, content, len) == 0);
+      // Do a case-insensitive prefix comparison.
+      DCHECK_EQ(strlen(magic_entry.magic), len);
+      match = base::EqualsCaseInsensitiveASCII(magic_entry.magic,
+                                               base::StringPiece(content, len));
     }
   } else {
     if (size >= len) {
@@ -409,7 +407,7 @@ static bool SniffForHTML(const char* content,
   const char* const end = content + size;
   const char* pos;
   for (pos = content; pos < end; ++pos) {
-    if (!IsAsciiWhitespace(*pos))
+    if (!base::IsAsciiWhitespace(*pos))
       break;
   }
   static base::HistogramBase* counter(NULL);
@@ -460,17 +458,17 @@ static bool SniffForOfficeDocs(const char* content,
     return false;
 
   OfficeDocType type = DOC_TYPE_NONE;
+  base::StringPiece url_path = url.path_piece();
   for (size_t i = 0; i < arraysize(kOfficeExtensionTypes); ++i) {
-    std::string url_path = url.path();
-
     if (url_path.length() < kOfficeExtensionTypes[i].extension_len)
       continue;
 
-    const char* extension =
-        &url_path[url_path.length() - kOfficeExtensionTypes[i].extension_len];
-
-    if (0 == base::strncasecmp(extension, kOfficeExtensionTypes[i].extension,
-                               kOfficeExtensionTypes[i].extension_len)) {
+    base::StringPiece extension = url_path.substr(
+        url_path.length() - kOfficeExtensionTypes[i].extension_len);
+    if (base::EqualsCaseInsensitiveASCII(
+            extension,
+            base::StringPiece(kOfficeExtensionTypes[i].extension,
+                              kOfficeExtensionTypes[i].extension_len))) {
       type = kOfficeExtensionTypes[i].doc_type;
       break;
     }
@@ -612,14 +610,22 @@ static bool SniffXML(const char* content,
     if (!pos)
       return false;
 
-    if ((pos + sizeof("<?xml") - 1 <= end) &&
-        (base::strncasecmp(pos, "<?xml", sizeof("<?xml") - 1) == 0)) {
+    static const char kXmlPrefix[] = "<?xml";
+    static const size_t kXmlPrefixLength = arraysize(kXmlPrefix) - 1;
+    static const char kDocTypePrefix[] = "<!DOCTYPE";
+    static const size_t kDocTypePrefixLength = arraysize(kDocTypePrefix) - 1;
+
+    if ((pos + kXmlPrefixLength <= end) &&
+        base::EqualsCaseInsensitiveASCII(
+            base::StringPiece(pos, kXmlPrefixLength),
+            base::StringPiece(kXmlPrefix, kXmlPrefixLength))) {
       // Skip XML declarations.
       ++pos;
       continue;
-    } else if ((pos + sizeof("<!DOCTYPE") - 1 <= end) &&
-               (base::strncasecmp(pos, "<!DOCTYPE", sizeof("<!DOCTYPE") - 1) ==
-                0)) {
+    } else if ((pos + kDocTypePrefixLength <= end) &&
+               base::EqualsCaseInsensitiveASCII(
+                   base::StringPiece(pos, kDocTypePrefixLength),
+                   base::StringPiece(kDocTypePrefix, kDocTypePrefixLength))) {
       // Skip DOCTYPE declarations.
       ++pos;
       continue;
@@ -649,27 +655,6 @@ static const MagicNumber kByteOrderMark[] = {
   MAGIC_NUMBER("text/plain", "\xFE\xFF")  // UTF-16BE
   MAGIC_NUMBER("text/plain", "\xFF\xFE")  // UTF-16LE
   MAGIC_NUMBER("text/plain", "\xEF\xBB\xBF")  // UTF-8
-};
-
-// Whether a given byte looks like it might be part of binary content.
-// Source: HTML5 spec
-static char kByteLooksBinary[] = {
-  1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 1, 0, 0, 1, 1,  // 0x00 - 0x0F
-  1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1,  // 0x10 - 0x1F
-  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,  // 0x20 - 0x2F
-  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,  // 0x30 - 0x3F
-  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,  // 0x40 - 0x4F
-  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,  // 0x50 - 0x5F
-  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,  // 0x60 - 0x6F
-  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,  // 0x70 - 0x7F
-  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,  // 0x80 - 0x8F
-  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,  // 0x90 - 0x9F
-  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,  // 0xA0 - 0xAF
-  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,  // 0xB0 - 0xBF
-  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,  // 0xC0 - 0xCF
-  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,  // 0xD0 - 0xDF
-  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,  // 0xE0 - 0xEF
-  0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,  // 0xF0 - 0xFF
 };
 
 // Returns true and sets result to "application/octet-stream" if the content
@@ -704,12 +689,9 @@ static bool SniffBinary(const char* content,
   }
 
   // Next we look to see if any of the bytes "look binary."
-  for (size_t i = 0; i < size; ++i) {
-    // If we a see a binary-looking byte, we think the content is binary.
-    if (kByteLooksBinary[static_cast<unsigned char>(content[i])]) {
-      result->assign("application/octet-stream");
-      return true;
-    }
+  if (LooksLikeBinary(content, size)) {
+    result->assign("application/octet-stream");
+    return true;
   }
 
   // No evidence either way. Default to non-binary and, if truncated, clear
@@ -777,15 +759,10 @@ static bool SniffCRX(const char* content,
   };
 
   // Only consider files that have the extension ".crx".
-  static const char kCRXExtension[] = ".crx";
-  // Ignore null by subtracting 1.
-  static const int kExtensionLength = arraysize(kCRXExtension) - 1;
-  if (url.path().rfind(kCRXExtension, std::string::npos, kExtensionLength) ==
-      url.path().size() - kExtensionLength) {
+  if (base::EndsWith(url.path_piece(), ".crx", base::CompareCase::SENSITIVE))
     counter->Add(1);
-  } else {
+  else
     return false;
-  }
 
   *have_enough_content &= TruncateSize(kBytesRequiredForMagic, &size);
   if (CheckForMagicNumbers(content, size,
@@ -967,6 +944,24 @@ bool SniffMimeTypeFromLocalData(const char* content,
   // Finally check the original table.
   return CheckForMagicNumbers(content, size, kMagicNumbers,
                               arraysize(kMagicNumbers), NULL, result);
+}
+
+bool LooksLikeBinary(const char* content, size_t size) {
+  // The definition of "binary bytes" is from the spec at
+  // https://mimesniff.spec.whatwg.org/#binary-data-byte
+  //
+  // The bytes which are considered to be "binary" are all < 0x20. Encode them
+  // one bit per byte, with 1 for a "binary" bit, and 0 for a "text" bit. The
+  // least-significant bit represents byte 0x00, the most-significant bit
+  // represents byte 0x1F.
+  const uint32_t kBinaryBits =
+      ~(1u << '\t' | 1u << '\n' | 1u << '\r' | 1u << '\f' | 1u << '\x1b');
+  for (size_t i = 0; i < size; ++i) {
+    uint8_t byte = static_cast<uint8_t>(content[i]);
+    if (byte < 0x20 && (kBinaryBits & (1u << byte)))
+      return true;
+  }
+  return false;
 }
 
 }  // namespace net

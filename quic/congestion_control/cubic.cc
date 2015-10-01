@@ -4,6 +4,7 @@
 
 #include "net/quic/congestion_control/cubic.h"
 
+#include <stdint.h>
 #include <algorithm>
 #include <cmath>
 
@@ -26,7 +27,7 @@ const int kCubeScale = 40;  // 1024*1024^3 (first 1024 is from 0.100^3)
                             // where 0.100 is 100 ms which is the scaling
                             // round trip time.
 const int kCubeCongestionWindowScale = 410;
-const uint64 kCubeFactor = (GG_UINT64_C(1) << kCubeScale) /
+const uint64 kCubeFactor = (UINT64_C(1) << kCubeScale) /
     kCubeCongestionWindowScale;
 
 const uint32 kDefaultNumConnections = 2;
@@ -78,6 +79,18 @@ void Cubic::Reset() {
   last_target_congestion_window_ = 0;
 }
 
+void Cubic::OnApplicationLimited() {
+  // When sender is not using the available congestion window, the window does
+  // not grow. But to be RTT-independent, Cubic assumes that the sender has been
+  // using the entire window during the time since the beginning of the current
+  // "epoch" (the end of the last loss recovery period). Since
+  // application-limited periods break this assumption, we reset the epoch when
+  // in such a period. This reset effectively freezes congestion window growth
+  // through application-limited periods and allows Cubic growth to continue
+  // when the entire window is being used.
+  epoch_ = QuicTime::Zero();
+}
+
 QuicPacketCount Cubic::CongestionWindowAfterPacketLoss(
     QuicPacketCount current_congestion_window) {
   if (current_congestion_window < last_max_congestion_window_) {
@@ -121,8 +134,7 @@ QuicPacketCount Cubic::CongestionWindowAfterAck(
       time_to_origin_point_ =
           static_cast<uint32>(cbrt(kCubeFactor * (last_max_congestion_window_ -
                                                   current_congestion_window)));
-      origin_point_congestion_window_ =
-          last_max_congestion_window_;
+      origin_point_congestion_window_ = last_max_congestion_window_;
     }
   }
   // Change the time unit from microseconds to 2^10 fractions per second. Take
@@ -163,7 +175,7 @@ QuicPacketCount Cubic::CongestionWindowAfterAck(
     target_congestion_window = estimated_tcp_congestion_window_;
   }
 
-  DVLOG(1) << "Target congestion_window: " << target_congestion_window;
+  DVLOG(1) << "Final target congestion_window: " << target_congestion_window;
   return target_congestion_window;
 }
 

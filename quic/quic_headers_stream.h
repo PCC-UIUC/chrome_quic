@@ -14,13 +14,15 @@
 
 namespace net {
 
+class QuicSpdySession;
+
 // Headers in QUIC are sent as SPDY SYN_STREAM or SYN_REPLY frames
-// over a reserved reliable stream with the id 2.  Each endpoint (client
+// over a reserved reliable stream with the id 3.  Each endpoint (client
 // and server) will allocate an instance of QuicHeadersStream to send
 // and receive headers.
 class NET_EXPORT_PRIVATE QuicHeadersStream : public ReliableQuicStream {
  public:
-  explicit QuicHeadersStream(QuicSession* session);
+  explicit QuicHeadersStream(QuicSpdySession* session);
   ~QuicHeadersStream() override;
 
   // Writes |headers| for |stream_id| in a SYN_STREAM or SYN_REPLY
@@ -35,15 +37,11 @@ class NET_EXPORT_PRIVATE QuicHeadersStream : public ReliableQuicStream {
       QuicAckNotifier::DelegateInterface* ack_notifier_delegate);
 
   // ReliableQuicStream implementation
-  uint32 ProcessRawData(const char* data, uint32 data_len) override;
+  void OnDataAvailable() override;
   QuicPriority EffectivePriority() const override;
-
-  void OnSuccessfulVersionNegotiation(QuicVersion version);
 
  private:
   class SpdyFramerVisitor;
-
-  void InitializeFramer(QuicVersion version);
 
   // The following methods are called by the SimpleVisitor.
 
@@ -71,12 +69,14 @@ class NET_EXPORT_PRIVATE QuicHeadersStream : public ReliableQuicStream {
   // Returns true if the session is still connected.
   bool IsConnected();
 
+  QuicSpdySession* spdy_session_;
+
   // Data about the stream whose headers are being processed.
   QuicStreamId stream_id_;
   bool fin_;
   size_t frame_len_;
 
-  scoped_ptr<SpdyFramer> spdy_framer_;
+  SpdyFramer spdy_framer_;
   scoped_ptr<SpdyFramerVisitor> spdy_framer_visitor_;
 
   DISALLOW_COPY_AND_ASSIGN(QuicHeadersStream);

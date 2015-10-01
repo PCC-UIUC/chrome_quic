@@ -7,7 +7,10 @@
 #include "base/logging.h"
 #include "base/stl_util.h"
 #include "base/strings/string_number_conversions.h"
-#include "net/quic/quic_session.h"
+#include "base/strings/string_piece.h"
+#include "base/strings/string_split.h"
+#include "net/quic/quic_data_stream.h"
+#include "net/quic/quic_spdy_session.h"
 #include "net/quic/spdy_utils.h"
 #include "net/spdy/spdy_protocol.h"
 #include "net/tools/quic/quic_in_memory_cache.h"
@@ -20,40 +23,49 @@ namespace net {
 namespace tools {
 
 QuicSpdyServerStream::QuicSpdyServerStream(QuicStreamId id,
-                                           QuicSession* session)
-    : QuicDataStream(id, session),
-      content_length_(-1) {
+                                           QuicSpdySession* session)
+    : QuicDataStream(id, session), content_length_(-1) {
 }
 
 QuicSpdyServerStream::~QuicSpdyServerStream() {
 }
 
-uint32 QuicSpdyServerStream::ProcessData(const char* data, uint32 data_len) {
-  if (!headers_decompressed()) {
-    // Let the headers data accumulate in the underlying QuicDataStream.
-    return 0;
-  }
-  if (request_headers_.empty()) {
-    if (!ParseRequestHeaders(data, data_len)) {
-      // Headers were invalid.
-      SendErrorResponse();
-      return 0;
-    }
-  } else {
-    body_.append(data, data_len);
-  }
-  DCHECK(!request_headers_.empty());
-  if (content_length_ >= 0 &&
-      static_cast<int>(body_.size()) > content_length_) {
+void QuicSpdyServerStream::OnStreamHeadersComplete(bool fin, size_t frame_len) {
+  QuicDataStream::OnStreamHeadersComplete(fin, frame_len);
+  if (!ParseRequestHeaders(decompressed_headers().data(),
+                           decompressed_headers().length())) {
+    // Headers were invalid.
     SendErrorResponse();
-    return 0;
   }
-  DVLOG(1) << "Processed " << data_len << " bytes for stream " << id();
-  return data_len;
+  MarkHeadersConsumed(decompressed_headers().length());
 }
 
-void QuicSpdyServerStream::OnFinRead() {
-  ReliableQuicStream::OnFinRead();
+void QuicSpdyServerStream::OnDataAvailable() {
+  while (HasBytesToRead()) {
+    struct iovec iov;
+    if (GetReadableRegions(&iov, 1) == 0) {
+      // No more data to read.
+      break;
+    }
+    DVLOG(1) << "Processed " << iov.iov_len << " bytes for stream " << id();
+    body_.append(static_cast<char*>(iov.iov_base), iov.iov_len);
+
+    if (content_length_ >= 0 &&
+        static_cast<int>(body_.size()) > content_length_) {
+      SendErrorResponse();
+      return;
+    }
+    MarkConsumed(iov.iov_len);
+  }
+  if (!sequencer()->IsClosed()) {
+    sequencer()->SetUnblocked();
+    return;
+  }
+
+  // If the sequencer is closed, then the all the body, including the fin,
+  // has been consumed.
+  OnFinRead();
+
   if (write_side_closed() || fin_buffered()) {
     return;
   }
@@ -75,7 +87,7 @@ void QuicSpdyServerStream::OnFinRead() {
 bool QuicSpdyServerStream::ParseRequestHeaders(const char* data,
                                                uint32 data_len) {
   DCHECK(headers_decompressed());
-  SpdyFramer framer(SPDY3);
+  SpdyFramer framer(HTTP2);
   size_t len = framer.ParseHeaderBlockInBuffer(data,
                                                data_len,
                                                &request_headers_);
@@ -87,10 +99,28 @@ bool QuicSpdyServerStream::ParseRequestHeaders(const char* data,
   if (data_len > len) {
     body_.append(data + len, data_len - len);
   }
-  if (ContainsKey(request_headers_, "content-length") &&
-      !StringToInt(request_headers_["content-length"], &content_length_)) {
-    return false;  // Invalid content-length.
+  if (ContainsKey(request_headers_, "content-length")) {
+    string delimiter;
+    delimiter.push_back('\0');
+    std::vector<string> values =
+        base::SplitString(request_headers_["content-length"], delimiter,
+                          base::KEEP_WHITESPACE, base::SPLIT_WANT_ALL);
+
+    for (const string& value : values) {
+      int new_value;
+      if (!StringToInt(value, &new_value) || new_value < 0) {
+        return false;
+      }
+      if (content_length_ < 0) {
+        content_length_ = new_value;
+        continue;
+      }
+      if (new_value != content_length_) {
+        return false;
+      }
+    }
   }
+
   return true;
 }
 

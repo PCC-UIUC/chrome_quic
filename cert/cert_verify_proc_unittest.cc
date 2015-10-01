@@ -57,6 +57,7 @@ class WellKnownCaCertVerifyProc : public CertVerifyProc {
 
   // CertVerifyProc implementation:
   bool SupportsAdditionalTrustAnchors() const override { return false; }
+  bool SupportsOCSPStapling() const override { return false; }
 
  protected:
   ~WellKnownCaCertVerifyProc() override {}
@@ -64,6 +65,7 @@ class WellKnownCaCertVerifyProc : public CertVerifyProc {
  private:
   int VerifyInternal(X509Certificate* cert,
                      const std::string& hostname,
+                     const std::string& ocsp_response,
                      int flags,
                      CRLSet* crl_set,
                      const CertificateList& additional_trust_anchors,
@@ -77,6 +79,7 @@ class WellKnownCaCertVerifyProc : public CertVerifyProc {
 int WellKnownCaCertVerifyProc::VerifyInternal(
     X509Certificate* cert,
     const std::string& hostname,
+    const std::string& ocsp_response,
     int flags,
     CRLSet* crl_set,
     const CertificateList& additional_trust_anchors,
@@ -125,7 +128,7 @@ class CertVerifyProcTest : public testing::Test {
              CRLSet* crl_set,
              const CertificateList& additional_trust_anchors,
              CertVerifyResult* verify_result) {
-    return verify_proc_->Verify(cert, hostname, flags, crl_set,
+    return verify_proc_->Verify(cert, hostname, std::string(), flags, crl_set,
                                 additional_trust_anchors, verify_result);
   }
 
@@ -161,7 +164,9 @@ TEST_F(CertVerifyProcTest, DISABLED_WithoutRevocationChecking) {
 // TODO(jnd): http://crbug.com/117478 - EV verification is not yet supported.
 #define MAYBE_EVVerification DISABLED_EVVerification
 #else
-#define MAYBE_EVVerification EVVerification
+// TODO(rsleevi): Reenable this test once comodo.chaim.pem is no longer
+// expired, http://crbug.com/502818
+#define MAYBE_EVVerification DISABLED_EVVerification
 #endif
 TEST_F(CertVerifyProcTest, MAYBE_EVVerification) {
   CertificateList certs = CreateCertificateListFromFile(
@@ -1398,7 +1403,13 @@ const WeakDigestTestData kVerifyRootCATestData[] = {
   { "weak_digest_md2_root.pem", "weak_digest_sha1_intermediate.pem",
     "weak_digest_sha1_ee.pem", EXPECT_SHA1 },
 };
-INSTANTIATE_TEST_CASE_P(VerifyRoot, CertVerifyProcWeakDigestTest,
+#if defined(OS_ANDROID)
+#define MAYBE_VerifyRoot DISABLED_VerifyRoot
+#else
+#define MAYBE_VerifyRoot VerifyRoot
+#endif
+INSTANTIATE_TEST_CASE_P(MAYBE_VerifyRoot,
+                        CertVerifyProcWeakDigestTest,
                         testing::ValuesIn(kVerifyRootCATestData));
 
 // The signature algorithm of intermediates should be properly detected.
@@ -1414,7 +1425,7 @@ const WeakDigestTestData kVerifyIntermediateCATestData[] = {
     "weak_digest_sha1_ee.pem", EXPECT_MD2 | EXPECT_SHA1 },
 };
 // Disabled on NSS - MD4 is not supported, and MD2 and MD5 are disabled.
-#if defined(USE_NSS_CERTS) || defined(OS_IOS)
+#if defined(USE_NSS_CERTS) || defined(OS_IOS) || defined(OS_ANDROID)
 #define MAYBE_VerifyIntermediate DISABLED_VerifyIntermediate
 #else
 #define MAYBE_VerifyIntermediate VerifyIntermediate
@@ -1439,7 +1450,7 @@ const WeakDigestTestData kVerifyEndEntityTestData[] = {
 // Disabled on NSS - NSS caches chains/signatures in such a way that cannot
 // be cleared until NSS is cleanly shutdown, which is not presently supported
 // in Chromium.
-#if defined(USE_NSS_CERTS) || defined(OS_IOS)
+#if defined(USE_NSS_CERTS) || defined(OS_IOS) || defined(OS_ANDROID)
 #define MAYBE_VerifyEndEntity DISABLED_VerifyEndEntity
 #else
 #define MAYBE_VerifyEndEntity VerifyEndEntity
@@ -1462,7 +1473,7 @@ const WeakDigestTestData kVerifyIncompleteIntermediateTestData[] = {
 };
 // Disabled on NSS - libpkix does not return constructed chains on error,
 // preventing us from detecting/inspecting the verified chain.
-#if defined(USE_NSS_CERTS) || defined(OS_IOS)
+#if defined(USE_NSS_CERTS) || defined(OS_IOS) || defined(OS_ANDROID)
 #define MAYBE_VerifyIncompleteIntermediate \
     DISABLED_VerifyIncompleteIntermediate
 #else
@@ -1487,7 +1498,7 @@ const WeakDigestTestData kVerifyIncompleteEETestData[] = {
 };
 // Disabled on NSS - libpkix does not return constructed chains on error,
 // preventing us from detecting/inspecting the verified chain.
-#if defined(USE_NSS_CERTS) || defined(OS_IOS)
+#if defined(USE_NSS_CERTS) || defined(OS_IOS) || defined(OS_ANDROID)
 #define MAYBE_VerifyIncompleteEndEntity DISABLED_VerifyIncompleteEndEntity
 #else
 #define MAYBE_VerifyIncompleteEndEntity VerifyIncompleteEndEntity
@@ -1512,7 +1523,7 @@ const WeakDigestTestData kVerifyMixedTestData[] = {
 };
 // NSS does not support MD4 and does not enable MD2 by default, making all
 // permutations invalid.
-#if defined(USE_NSS_CERTS) || defined(OS_IOS)
+#if defined(USE_NSS_CERTS) || defined(OS_IOS) || defined(OS_ANDROID)
 #define MAYBE_VerifyMixed DISABLED_VerifyMixed
 #else
 #define MAYBE_VerifyMixed VerifyMixed

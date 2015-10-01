@@ -13,7 +13,6 @@
 
 #include "base/basictypes.h"
 #include "base/containers/hash_tables.h"
-#include "base/gtest_prod_util.h"
 #include "base/threading/non_thread_safe.h"
 #include "base/values.h"
 #include "net/base/host_port_pair.h"
@@ -81,15 +80,21 @@ class NET_EXPORT HttpServerPropertiesImpl
   base::WeakPtr<HttpServerProperties> GetWeakPtr() override;
   void Clear() override;
   bool SupportsRequestPriority(const HostPortPair& server) override;
+  bool GetSupportsSpdy(const HostPortPair& server) override;
   void SetSupportsSpdy(const HostPortPair& server, bool support_spdy) override;
   bool RequiresHTTP11(const HostPortPair& server) override;
   void SetHTTP11Required(const HostPortPair& server) override;
   void MaybeForceHTTP11(const HostPortPair& server,
                         SSLConfig* ssl_config) override;
-  AlternativeService GetAlternativeService(const HostPortPair& origin) override;
-  void SetAlternativeService(const HostPortPair& origin,
+  AlternativeServiceVector GetAlternativeServices(
+      const HostPortPair& origin) override;
+  bool SetAlternativeService(const HostPortPair& origin,
                              const AlternativeService& alternative_service,
-                             double alternative_probability) override;
+                             double alternative_probability,
+                             base::Time expiration) override;
+  bool SetAlternativeServices(const HostPortPair& origin,
+                              const AlternativeServiceInfoVector&
+                                  alternative_service_info_vector) override;
   void MarkAlternativeServiceBroken(
       const AlternativeService& alternative_service) override;
   void MarkAlternativeServiceRecentlyBroken(
@@ -100,10 +105,10 @@ class NET_EXPORT HttpServerPropertiesImpl
       const AlternativeService& alternative_service) override;
   void ConfirmAlternativeService(
       const AlternativeService& alternative_service) override;
-  void ClearAlternativeService(const HostPortPair& origin) override;
+  void ClearAlternativeServices(const HostPortPair& origin) override;
   const AlternativeServiceMap& alternative_service_map() const override;
-  base::Value* GetAlternativeServiceInfoAsValue() const override;
-  void SetAlternateProtocolProbabilityThreshold(double threshold) override;
+  scoped_ptr<base::Value> GetAlternativeServiceInfoAsValue() const override;
+  void SetAlternativeServiceProbabilityThreshold(double threshold) override;
   const SettingsMap& GetSpdySettings(
       const HostPortPair& host_port_pair) override;
   bool SetSpdySetting(const HostPortPair& host_port_pair,
@@ -170,7 +175,7 @@ class NET_EXPORT HttpServerPropertiesImpl
   // ".googlevideo.com", ".googleusercontent.com") of canonical hostnames.
   CanonicalSufficList canonical_suffixes_;
 
-  double alternate_protocol_probability_threshold_;
+  double alternative_service_probability_threshold_;
 
   base::WeakPtrFactory<HttpServerPropertiesImpl> weak_ptr_factory_;
 

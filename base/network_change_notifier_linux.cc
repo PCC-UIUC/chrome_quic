@@ -14,7 +14,7 @@ namespace net {
 
 class NetworkChangeNotifierLinux::Thread : public base::Thread {
  public:
-  Thread();
+  explicit Thread(const base::hash_set<std::string>& ignored_interfaces);
   ~Thread() override;
 
   // Plumbing for NetworkChangeNotifier::GetCurrentConnectionType.
@@ -43,14 +43,16 @@ class NetworkChangeNotifierLinux::Thread : public base::Thread {
   DISALLOW_COPY_AND_ASSIGN(Thread);
 };
 
-NetworkChangeNotifierLinux::Thread::Thread()
+NetworkChangeNotifierLinux::Thread::Thread(
+    const base::hash_set<std::string>& ignored_interfaces)
     : base::Thread("NetworkChangeNotifier"),
       address_tracker_(
           base::Bind(&NetworkChangeNotifierLinux::Thread::OnIPAddressChanged,
                      base::Unretained(this)),
           base::Bind(&NetworkChangeNotifierLinux::Thread::OnLinkChanged,
                      base::Unretained(this)),
-          base::Bind(base::DoNothing)),
+          base::Bind(base::DoNothing),
+          ignored_interfaces),
       last_type_(NetworkChangeNotifier::CONNECTION_NONE) {
 }
 
@@ -80,16 +82,18 @@ void NetworkChangeNotifierLinux::Thread::OnLinkChanged() {
   if (last_type_ != GetCurrentConnectionType()) {
     NetworkChangeNotifier::NotifyObserversOfConnectionTypeChange();
     last_type_ = GetCurrentConnectionType();
+    double max_bandwidth_mbps =
+        NetworkChangeNotifier::GetMaxBandwidthForConnectionSubtype(
+            last_type_ == CONNECTION_NONE ? SUBTYPE_NONE : SUBTYPE_UNKNOWN);
+    NetworkChangeNotifier::NotifyObserversOfMaxBandwidthChange(
+        max_bandwidth_mbps, last_type_);
   }
 }
 
-NetworkChangeNotifierLinux* NetworkChangeNotifierLinux::Create() {
-  return new NetworkChangeNotifierLinux();
-}
-
-NetworkChangeNotifierLinux::NetworkChangeNotifierLinux()
+NetworkChangeNotifierLinux::NetworkChangeNotifierLinux(
+    const base::hash_set<std::string>& ignored_interfaces)
     : NetworkChangeNotifier(NetworkChangeCalculatorParamsLinux()),
-      notifier_thread_(new Thread()) {
+      notifier_thread_(new Thread(ignored_interfaces)) {
   // We create this notifier thread because the notification implementation
   // needs a MessageLoopForIO, and there's no guarantee that
   // MessageLoop::current() meets that criterion.

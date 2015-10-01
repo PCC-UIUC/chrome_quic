@@ -6,11 +6,13 @@
 
 #include "base/bind.h"
 #include "base/compiler_specific.h"
+#include "base/location.h"
 #include "base/logging.h"
-#include "base/message_loop/message_loop.h"
 #include "base/metrics/histogram_macros.h"
+#include "base/single_thread_task_runner.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/stringprintf.h"
+#include "base/thread_task_runner_handle.h"
 #include "base/values.h"
 #include "net/spdy/spdy_buffer_producer.h"
 #include "net/spdy/spdy_http_utils.h"
@@ -20,28 +22,28 @@ namespace net {
 
 namespace {
 
-base::Value* NetLogSpdyStreamErrorCallback(
+scoped_ptr<base::Value> NetLogSpdyStreamErrorCallback(
     SpdyStreamId stream_id,
     int status,
     const std::string* description,
     NetLogCaptureMode /* capture_mode */) {
-  base::DictionaryValue* dict = new base::DictionaryValue();
+  scoped_ptr<base::DictionaryValue> dict(new base::DictionaryValue());
   dict->SetInteger("stream_id", static_cast<int>(stream_id));
   dict->SetInteger("status", status);
   dict->SetString("description", *description);
-  return dict;
+  return dict.Pass();
 }
 
-base::Value* NetLogSpdyStreamWindowUpdateCallback(
+scoped_ptr<base::Value> NetLogSpdyStreamWindowUpdateCallback(
     SpdyStreamId stream_id,
     int32 delta,
     int32 window_size,
     NetLogCaptureMode /* capture_mode */) {
-  base::DictionaryValue* dict = new base::DictionaryValue();
+  scoped_ptr<base::DictionaryValue> dict(new base::DictionaryValue());
   dict->SetInteger("stream_id", stream_id);
   dict->SetInteger("delta", delta);
   dict->SetInteger("window_size", window_size);
-  return dict;
+  return dict.Pass();
 }
 
 bool ContainsUppercaseAscii(const std::string& str) {
@@ -54,6 +56,8 @@ bool ContainsUppercaseAscii(const std::string& str) {
 }
 
 }  // namespace
+
+void SpdyStream::Delegate::OnTrailers(const SpdyHeaderBlock& trailers) {}
 
 // A wrapper around a stream that calls into ProduceSynStreamFrame().
 class SpdyStream::SynStreamBufferProducer : public SpdyBufferProducer {
@@ -104,6 +108,7 @@ SpdyStream::SpdyStream(SpdyStreamType type,
       response_status_(OK),
       net_log_(net_log),
       raw_received_bytes_(0),
+      raw_sent_bytes_(0),
       send_bytes_(0),
       recv_bytes_(0),
       write_handler_guard_(false),
@@ -131,9 +136,8 @@ void SpdyStream::SetDelegate(Delegate* delegate) {
 
   if (io_state_ == STATE_HALF_CLOSED_LOCAL_UNCLAIMED) {
     DCHECK_EQ(type_, SPDY_PUSH_STREAM);
-    base::MessageLoop::current()->PostTask(
-        FROM_HERE,
-        base::Bind(&SpdyStream::PushedStreamReplay, GetWeakPtr()));
+    base::ThreadTaskRunnerHandle::Get()->PostTask(
+        FROM_HERE, base::Bind(&SpdyStream::PushedStreamReplay, GetWeakPtr()));
   }
 }
 
@@ -347,12 +351,12 @@ void SpdyStream::DecreaseRecvWindowSize(int32 delta_window_size) {
   DCHECK_GE(session_->flow_control_state(), SpdySession::FLOW_CONTROL_STREAM);
   DCHECK_GE(delta_window_size, 1);
 
-  // Since we never decrease the initial receive window size,
-  // |delta_window_size| should never cause |recv_window_size_| to go
-  // negative. If we do, the receive window isn't being respected.
-  if (delta_window_size > recv_window_size_) {
+  // The receiving window size as the peer knows it is
+  // |recv_window_size_ - unacked_recv_window_bytes_|, if more data are sent by
+  // the peer, that means that the receive window is not being respected.
+  if (delta_window_size > recv_window_size_ - unacked_recv_window_bytes_) {
     session_->ResetStream(
-        stream_id_, RST_STREAM_PROTOCOL_ERROR,
+        stream_id_, RST_STREAM_FLOW_CONTROL_ERROR,
         "delta_window_size is " + base::IntToString(delta_window_size) +
             " in DecreaseRecvWindowSize, which is larger than the receive " +
             "window size of " + base::IntToString(recv_window_size_));
@@ -439,12 +443,18 @@ int SpdyStream::OnInitialResponseHeadersReceived(
 int SpdyStream::OnAdditionalResponseHeadersReceived(
     const SpdyHeaderBlock& additional_response_headers) {
   if (type_ == SPDY_REQUEST_RESPONSE_STREAM) {
-    session_->ResetStream(
-        stream_id_, RST_STREAM_PROTOCOL_ERROR,
-        "Additional headers received for request/response stream");
-    return ERR_SPDY_PROTOCOL_ERROR;
-  } else if (type_ == SPDY_PUSH_STREAM &&
-             response_headers_status_ == RESPONSE_HEADERS_ARE_COMPLETE) {
+    if (response_headers_status_ != RESPONSE_HEADERS_ARE_COMPLETE) {
+      session_->ResetStream(
+          stream_id_, RST_STREAM_PROTOCOL_ERROR,
+          "Additional headers received for request/response stream");
+      return ERR_SPDY_PROTOCOL_ERROR;
+    }
+    response_headers_status_ = TRAILERS_RECEIVED;
+    delegate_->OnTrailers(additional_response_headers);
+    return OK;
+  }
+  if (type_ == SPDY_PUSH_STREAM &&
+      response_headers_status_ == RESPONSE_HEADERS_ARE_COMPLETE) {
     session_->ResetStream(
         stream_id_, RST_STREAM_PROTOCOL_ERROR,
         "Additional headers received for push stream");
@@ -474,12 +484,20 @@ void SpdyStream::OnDataReceived(scoped_ptr<SpdyBuffer> buffer) {
     // It should be valid for this to happen in the server push case.
     // We'll return received data when delegate gets attached to the stream.
     if (buffer) {
-      pending_recv_data_.push_back(buffer.release());
+      pending_recv_data_.push_back(buffer.Pass());
     } else {
       pending_recv_data_.push_back(NULL);
       // Note: we leave the stream open in the session until the stream
       //       is claimed.
     }
+    return;
+  }
+
+  if (response_headers_status_ == TRAILERS_RECEIVED && buffer) {
+    // TRAILERS_RECEIVED is only used in SPDY_REQUEST_RESPONSE_STREAM.
+    DCHECK_EQ(type_, SPDY_REQUEST_RESPONSE_STREAM);
+    session_->ResetStream(stream_id_, RST_STREAM_PROTOCOL_ERROR,
+                          "Data received after trailers");
     return;
   }
 
@@ -545,12 +563,6 @@ void SpdyStream::OnPaddingConsumed(size_t len) {
 void SpdyStream::OnFrameWriteComplete(SpdyFrameType frame_type,
                                       size_t frame_size) {
   DCHECK_NE(type_, SPDY_PUSH_STREAM);
-
-  if (frame_size < session_->GetFrameMinimumSize() ||
-      frame_size > session_->GetFrameMaximumSize()) {
-    NOTREACHED();
-    return;
-  }
   CHECK(frame_type == SYN_STREAM ||
         frame_type == DATA) << frame_type;
 
@@ -710,10 +722,6 @@ bool SpdyStream::GetSSLInfo(SSLInfo* ssl_info,
       ssl_info, was_npn_negotiated, protocol_negotiated);
 }
 
-bool SpdyStream::GetSSLCertRequestInfo(SSLCertRequestInfo* cert_request_info) {
-  return session_->GetSSLCertRequestInfo(cert_request_info);
-}
-
 void SpdyStream::PossiblyResumeIfSendStalled() {
   if (IsLocallyClosed()) {
     return;
@@ -751,6 +759,14 @@ bool SpdyStream::IsReservedRemote() const {
 
 NextProto SpdyStream::GetProtocol() const {
   return session_->protocol();
+}
+
+void SpdyStream::AddRawReceivedBytes(size_t received_bytes) {
+  raw_received_bytes_ += received_bytes;
+}
+
+void SpdyStream::AddRawSentBytes(size_t sent_bytes) {
+  raw_sent_bytes_ += sent_bytes;
 }
 
 bool SpdyStream::GetLoadTimingInfo(LoadTimingInfo* load_timing_info) const {
@@ -866,21 +882,23 @@ int SpdyStream::MergeWithResponseHeaders(
   for (SpdyHeaderBlock::const_iterator it = new_response_headers.begin();
       it != new_response_headers.end(); ++it) {
     // Disallow uppercase headers.
-    if (ContainsUppercaseAscii(it->first)) {
-      session_->ResetStream(stream_id_, RST_STREAM_PROTOCOL_ERROR,
-                            "Upper case characters in header: " + it->first);
+    if (ContainsUppercaseAscii(it->first.as_string())) {
+      session_->ResetStream(
+          stream_id_, RST_STREAM_PROTOCOL_ERROR,
+          "Upper case characters in header: " + it->first.as_string());
       return ERR_SPDY_PROTOCOL_ERROR;
     }
 
-    SpdyHeaderBlock::iterator it2 = response_headers_.lower_bound(it->first);
+    SpdyHeaderBlock::iterator it2 =
+        response_headers_.find(it->first.as_string());
     // Disallow duplicate headers.  This is just to be conservative.
-    if (it2 != response_headers_.end() && it2->first == it->first) {
+    if (it2 != response_headers_.end()) {
       session_->ResetStream(stream_id_, RST_STREAM_PROTOCOL_ERROR,
-                            "Duplicate header: " + it->first);
+                            "Duplicate header: " + it->first.as_string());
       return ERR_SPDY_PROTOCOL_ERROR;
     }
 
-    response_headers_.insert(it2, *it);
+    response_headers_.insert(*it);
   }
 
   // If delegate_ is not yet attached, we'll call

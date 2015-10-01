@@ -5,18 +5,21 @@
 #include "base/basictypes.h"
 #include "base/strings/string_split.h"
 #include "base/strings/utf_string_conversions.h"
+#include "build/build_config.h"
 #include "net/base/mime_util.h"
 #include "testing/gtest/include/gtest/gtest.h"
-
-#if defined(OS_ANDROID)
-#include "base/android/build_info.h"
-#endif
 
 namespace net {
 
 TEST(MimeUtilTest, ExtensionTest) {
+  // String: png\0css
+  base::FilePath::StringType containsNullByte;
+  containsNullByte.append(FILE_PATH_LITERAL("png"));
+  containsNullByte.append(1, FILE_PATH_LITERAL('\0'));
+  containsNullByte.append(FILE_PATH_LITERAL("css"));
+
   const struct {
-    const base::FilePath::CharType* extension;
+    const base::FilePath::StringType extension;
     const char* const mime_type;
     bool valid;
   } tests[] = {
@@ -25,10 +28,16 @@ TEST(MimeUtilTest, ExtensionTest) {
     {FILE_PATH_LITERAL("css"), "text/css", true},
     {FILE_PATH_LITERAL("pjp"), "image/jpeg", true},
     {FILE_PATH_LITERAL("pjpeg"), "image/jpeg", true},
+#if defined(OS_CHROMEOS)
+    // These two are test cases for testing platform mime types on Chrome OS.
+    {FILE_PATH_LITERAL("epub"), "application/epub+zip", true},
+    {FILE_PATH_LITERAL("ics"), "text/calendar", true},
+#endif
 #if defined(OS_ANDROID)
     {FILE_PATH_LITERAL("m3u8"), "application/x-mpegurl", true},
 #endif
     {FILE_PATH_LITERAL("not an extension / for sure"), "", false},
+    {containsNullByte, "", false}
   };
 
   std::string mime_type;
@@ -67,80 +76,6 @@ TEST(MimeUtilTest, FileTest) {
     if (rv)
       EXPECT_EQ(tests[i].mime_type, mime_type);
   }
-}
-
-TEST(MimeUtilTest, LookupTypes) {
-  EXPECT_FALSE(IsUnsupportedTextMimeType("text/banana"));
-  EXPECT_TRUE(IsUnsupportedTextMimeType("text/vcard"));
-
-  EXPECT_TRUE(IsSupportedImageMimeType("image/jpeg"));
-  EXPECT_TRUE(IsSupportedImageMimeType("Image/JPEG"));
-  EXPECT_FALSE(IsSupportedImageMimeType("image/lolcat"));
-  EXPECT_FALSE(IsSupportedImageMimeType("Image/LolCat"));
-  EXPECT_TRUE(IsSupportedNonImageMimeType("text/html"));
-  EXPECT_TRUE(IsSupportedNonImageMimeType("text/css"));
-  EXPECT_TRUE(IsSupportedNonImageMimeType("text/"));
-  EXPECT_TRUE(IsSupportedNonImageMimeType("text/banana"));
-  EXPECT_TRUE(IsSupportedNonImageMimeType("Text/Banana"));
-  EXPECT_FALSE(IsSupportedNonImageMimeType("text/vcard"));
-  EXPECT_FALSE(IsSupportedNonImageMimeType("application/virus"));
-  EXPECT_FALSE(IsSupportedNonImageMimeType("Application/VIRUS"));
-  EXPECT_TRUE(IsSupportedNonImageMimeType("application/x-x509-user-cert"));
-  EXPECT_TRUE(IsSupportedNonImageMimeType("application/json"));
-  EXPECT_TRUE(IsSupportedNonImageMimeType("application/+json"));
-  EXPECT_TRUE(IsSupportedNonImageMimeType("application/x-suggestions+json"));
-  EXPECT_TRUE(IsSupportedNonImageMimeType("application/x-s+json;x=2"));
-#if defined(OS_ANDROID)
-  EXPECT_TRUE(IsSupportedNonImageMimeType("application/x-x509-ca-cert"));
-  EXPECT_TRUE(IsSupportedNonImageMimeType("application/x-pkcs12"));
-  EXPECT_TRUE(IsSupportedMediaMimeType("application/vnd.apple.mpegurl"));
-  EXPECT_TRUE(IsSupportedMediaMimeType("application/x-mpegurl"));
-  EXPECT_TRUE(IsSupportedMediaMimeType("Application/X-MPEGURL"));
-#endif
-
-  EXPECT_TRUE(IsSupportedMimeType("image/jpeg"));
-  EXPECT_FALSE(IsSupportedMimeType("image/lolcat"));
-  EXPECT_FALSE(IsSupportedMimeType("Image/LOLCAT"));
-  EXPECT_TRUE(IsSupportedMimeType("text/html"));
-  EXPECT_TRUE(IsSupportedMimeType("text/banana"));
-  EXPECT_TRUE(IsSupportedMimeType("Text/BANANA"));
-  EXPECT_FALSE(IsSupportedMimeType("text/vcard"));
-  EXPECT_FALSE(IsSupportedMimeType("application/virus"));
-  EXPECT_FALSE(IsSupportedMimeType("application/x-json"));
-  EXPECT_FALSE(IsSupportedMimeType("Application/X-JSON"));
-  EXPECT_FALSE(IsSupportedNonImageMimeType("application/vnd.doc;x=y+json"));
-  EXPECT_FALSE(IsSupportedNonImageMimeType("Application/VND.DOC;X=Y+JSON"));
-}
-
-TEST(MimeUtilTest, StrictMediaMimeType) {
-  EXPECT_TRUE(IsStrictMediaMimeType("video/webm"));
-  EXPECT_TRUE(IsStrictMediaMimeType("Video/WEBM"));
-  EXPECT_TRUE(IsStrictMediaMimeType("audio/webm"));
-
-  EXPECT_TRUE(IsStrictMediaMimeType("audio/wav"));
-  EXPECT_TRUE(IsStrictMediaMimeType("audio/x-wav"));
-
-  EXPECT_TRUE(IsStrictMediaMimeType("video/ogg"));
-  EXPECT_TRUE(IsStrictMediaMimeType("audio/ogg"));
-  EXPECT_TRUE(IsStrictMediaMimeType("application/ogg"));
-
-  EXPECT_TRUE(IsStrictMediaMimeType("audio/mpeg"));
-  EXPECT_TRUE(IsStrictMediaMimeType("audio/mp3"));
-  EXPECT_TRUE(IsStrictMediaMimeType("audio/x-mp3"));
-
-  EXPECT_TRUE(IsStrictMediaMimeType("video/mp4"));
-  EXPECT_TRUE(IsStrictMediaMimeType("video/x-m4v"));
-  EXPECT_TRUE(IsStrictMediaMimeType("audio/mp4"));
-  EXPECT_TRUE(IsStrictMediaMimeType("audio/x-m4a"));
-
-  EXPECT_TRUE(IsStrictMediaMimeType("application/x-mpegurl"));
-  EXPECT_TRUE(IsStrictMediaMimeType("application/vnd.apple.mpegurl"));
-
-  EXPECT_FALSE(IsStrictMediaMimeType("video/unknown"));
-  EXPECT_FALSE(IsStrictMediaMimeType("Video/UNKNOWN"));
-  EXPECT_FALSE(IsStrictMediaMimeType("audio/unknown"));
-  EXPECT_FALSE(IsStrictMediaMimeType("application/unknown"));
-  EXPECT_FALSE(IsStrictMediaMimeType("unknown/unknown"));
 }
 
 TEST(MimeUtilTest, MatchesMimeType) {
@@ -220,104 +155,6 @@ TEST(MimeUtilTest, MatchesMimeType) {
   EXPECT_TRUE(MatchesMimeType("ab*cd", "abxxxcd"));
   EXPECT_TRUE(MatchesMimeType("ab*cd", "abx/xcd"));
   EXPECT_TRUE(MatchesMimeType("ab/*cd", "ab/xxxcd"));
-}
-
-TEST(MimeUtilTest, CommonMediaMimeType) {
-#if defined(OS_ANDROID)
-  bool HLSSupported;
-  if (base::android::BuildInfo::GetInstance()->sdk_int() < 14)
-    HLSSupported = false;
-  else
-    HLSSupported = true;
-#endif
-
-  EXPECT_TRUE(IsSupportedMediaMimeType("audio/webm"));
-  EXPECT_TRUE(IsSupportedMediaMimeType("video/webm"));
-
-  EXPECT_TRUE(IsSupportedMediaMimeType("audio/wav"));
-  EXPECT_TRUE(IsSupportedMediaMimeType("audio/x-wav"));
-
-  EXPECT_TRUE(IsSupportedMediaMimeType("audio/ogg"));
-  EXPECT_TRUE(IsSupportedMediaMimeType("application/ogg"));
-#if defined(OS_ANDROID)
-  EXPECT_FALSE(IsSupportedMediaMimeType("video/ogg"));
-  EXPECT_EQ(HLSSupported, IsSupportedMediaMimeType("application/x-mpegurl"));
-  EXPECT_EQ(HLSSupported,
-            IsSupportedMediaMimeType("application/vnd.apple.mpegurl"));
-#else
-  EXPECT_TRUE(IsSupportedMediaMimeType("video/ogg"));
-  EXPECT_FALSE(IsSupportedMediaMimeType("application/x-mpegurl"));
-  EXPECT_FALSE(IsSupportedMediaMimeType("application/vnd.apple.mpegurl"));
-#endif  // OS_ANDROID
-
-#if defined(USE_PROPRIETARY_CODECS)
-  EXPECT_TRUE(IsSupportedMediaMimeType("audio/mp4"));
-  EXPECT_TRUE(IsSupportedMediaMimeType("audio/x-m4a"));
-  EXPECT_TRUE(IsSupportedMediaMimeType("video/mp4"));
-  EXPECT_TRUE(IsSupportedMediaMimeType("video/x-m4v"));
-
-  EXPECT_TRUE(IsSupportedMediaMimeType("audio/mp3"));
-  EXPECT_TRUE(IsSupportedMediaMimeType("audio/x-mp3"));
-  EXPECT_TRUE(IsSupportedMediaMimeType("audio/mpeg"));
-  EXPECT_TRUE(IsSupportedMediaMimeType("audio/aac"));
-
-#if defined(ENABLE_MPEG2TS_STREAM_PARSER)
-  EXPECT_TRUE(IsSupportedMediaMimeType("video/mp2t"));
-#else
-  EXPECT_FALSE(IsSupportedMediaMimeType("video/mp2t"));
-#endif
-#else
-  EXPECT_FALSE(IsSupportedMediaMimeType("audio/mp4"));
-  EXPECT_FALSE(IsSupportedMediaMimeType("audio/x-m4a"));
-  EXPECT_FALSE(IsSupportedMediaMimeType("video/mp4"));
-  EXPECT_FALSE(IsSupportedMediaMimeType("video/x-m4v"));
-
-  EXPECT_FALSE(IsSupportedMediaMimeType("audio/mp3"));
-  EXPECT_FALSE(IsSupportedMediaMimeType("audio/x-mp3"));
-  EXPECT_FALSE(IsSupportedMediaMimeType("audio/mpeg"));
-  EXPECT_FALSE(IsSupportedMediaMimeType("audio/aac"));
-#endif  // USE_PROPRIETARY_CODECS
-  EXPECT_FALSE(IsSupportedMediaMimeType("video/mp3"));
-
-  EXPECT_FALSE(IsSupportedMediaMimeType("video/unknown"));
-  EXPECT_FALSE(IsSupportedMediaMimeType("audio/unknown"));
-  EXPECT_FALSE(IsSupportedMediaMimeType("unknown/unknown"));
-}
-
-// Note: codecs should only be a list of 2 or fewer; hence the restriction of
-// results' length to 2.
-TEST(MimeUtilTest, ParseCodecString) {
-  const struct {
-    const char* const original;
-    size_t expected_size;
-    const char* const results[2];
-  } tests[] = {
-    { "\"bogus\"",                  1, { "bogus" }            },
-    { "0",                          1, { "0" }                },
-    { "avc1.42E01E, mp4a.40.2",     2, { "avc1",   "mp4a" }   },
-    { "\"mp4v.20.240, mp4a.40.2\"", 2, { "mp4v",   "mp4a" }   },
-    { "mp4v.20.8, samr",            2, { "mp4v",   "samr" }   },
-    { "\"theora, vorbis\"",         2, { "theora", "vorbis" } },
-    { "",                           0, { }                    },
-    { "\"\"",                       0, { }                    },
-    { "\"   \"",                    0, { }                    },
-    { ",",                          2, { "", "" }             },
-  };
-
-  for (size_t i = 0; i < arraysize(tests); ++i) {
-    std::vector<std::string> codecs_out;
-    ParseCodecString(tests[i].original, &codecs_out, true);
-    ASSERT_EQ(tests[i].expected_size, codecs_out.size());
-    for (size_t j = 0; j < tests[i].expected_size; ++j)
-      EXPECT_EQ(tests[i].results[j], codecs_out[j]);
-  }
-
-  // Test without stripping the codec type.
-  std::vector<std::string> codecs_out;
-  ParseCodecString("avc1.42E01E, mp4a.40.2", &codecs_out, false);
-  ASSERT_EQ(2u, codecs_out.size());
-  EXPECT_EQ("avc1.42E01E", codecs_out[0]);
-  EXPECT_EQ("mp4a.40.2", codecs_out[1]);
 }
 
 TEST(MimeUtilTest, TestParseMimeTypeWithoutParameter) {
@@ -437,26 +274,6 @@ TEST(MimeUtilTest, TestGetExtensionsForMimeType) {
   }
 }
 
-TEST(MimeUtilTest, TestGetCertificateMimeTypeForMimeType) {
-  EXPECT_EQ(CERTIFICATE_MIME_TYPE_X509_USER_CERT,
-            GetCertificateMimeTypeForMimeType("application/x-x509-user-cert"));
-  EXPECT_EQ(CERTIFICATE_MIME_TYPE_X509_USER_CERT,
-            GetCertificateMimeTypeForMimeType("Application/X-X509-USER-CERT"));
-#if defined(OS_ANDROID)
-  // Only Android supports CA Certs and PKCS12 archives.
-  EXPECT_EQ(CERTIFICATE_MIME_TYPE_X509_CA_CERT,
-            GetCertificateMimeTypeForMimeType("application/x-x509-ca-cert"));
-  EXPECT_EQ(CERTIFICATE_MIME_TYPE_PKCS12_ARCHIVE,
-            GetCertificateMimeTypeForMimeType("application/x-pkcs12"));
-#else
-  EXPECT_EQ(CERTIFICATE_MIME_TYPE_UNKNOWN,
-            GetCertificateMimeTypeForMimeType("application/x-x509-ca-cert"));
-  EXPECT_EQ(CERTIFICATE_MIME_TYPE_UNKNOWN,
-            GetCertificateMimeTypeForMimeType("application/x-pkcs12"));
-#endif
-  EXPECT_EQ(CERTIFICATE_MIME_TYPE_UNKNOWN,
-            GetCertificateMimeTypeForMimeType("text/plain"));
-}
 
 TEST(MimeUtilTest, TestAddMultipartValueForUpload) {
   const char ref_output[] =

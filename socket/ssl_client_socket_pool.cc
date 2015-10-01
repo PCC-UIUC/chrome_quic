@@ -7,7 +7,7 @@
 #include "base/bind.h"
 #include "base/bind_helpers.h"
 #include "base/metrics/field_trial.h"
-#include "base/metrics/histogram.h"
+#include "base/metrics/histogram_macros.h"
 #include "base/metrics/sparse_histogram.h"
 #include "base/profiler/scoped_tracker.h"
 #include "base/values.h"
@@ -21,6 +21,7 @@
 #include "net/socket/ssl_client_socket.h"
 #include "net/socket/transport_client_socket_pool.h"
 #include "net/ssl/ssl_cert_request_info.h"
+#include "net/ssl/ssl_cipher_suite_names.h"
 #include "net/ssl/ssl_connection_status_flags.h"
 #include "net/ssl/ssl_info.h"
 
@@ -34,7 +35,7 @@ SSLSocketParams::SSLSocketParams(
     const SSLConfig& ssl_config,
     PrivacyMode privacy_mode,
     int load_flags,
-    bool want_spdy_over_npn)
+    bool expect_spdy)
     : direct_params_(direct_params),
       socks_proxy_params_(socks_proxy_params),
       http_proxy_params_(http_proxy_params),
@@ -42,7 +43,7 @@ SSLSocketParams::SSLSocketParams(
       ssl_config_(ssl_config),
       privacy_mode_(privacy_mode),
       load_flags_(load_flags),
-      want_spdy_over_npn_(want_spdy_over_npn),
+      expect_spdy_(expect_spdy),
       ignore_limits_(false) {
   if (direct_params_.get()) {
     DCHECK(!socks_proxy_params_.get());
@@ -163,12 +164,13 @@ void SSLConnectJob::GetAdditionalErrorState(ClientSocketHandle* handle) {
   handle->set_ssl_error_response_info(error_response_info_);
   if (!connect_timing_.ssl_start.is_null())
     handle->set_is_ssl_error(true);
+  if (ssl_socket_)
+    handle->set_ssl_failure_state(ssl_socket_->GetSSLFailureState());
+
+  handle->set_connection_attempts(connection_attempts_);
 }
 
 void SSLConnectJob::OnIOComplete(int result) {
-  // TODO(pkasting): Remove ScopedTracker below once crbug.com/455884 is fixed.
-  tracked_objects::ScopedTracker tracking_profile(
-      FROM_HERE_WITH_EXPLICIT_FUNCTION("455884 SSLConnectJob::OnIOComplete"));
   int rv = DoLoop(result);
   if (rv != ERR_IO_PENDING)
     NotifyDelegateOfCompletion(rv);  // Deletes |this|.
@@ -232,8 +234,11 @@ int SSLConnectJob::DoTransportConnect() {
 }
 
 int SSLConnectJob::DoTransportConnectComplete(int result) {
-  if (result == OK)
+  connection_attempts_ = transport_socket_handle_->connection_attempts();
+  if (result == OK) {
     next_state_ = STATE_SSL_CONNECT;
+    transport_socket_handle_->socket()->GetPeerAddress(&server_address_);
+  }
 
   return result;
 }
@@ -329,40 +334,23 @@ int SSLConnectJob::DoSSLConnectComplete(int result) {
 
   connect_timing_.ssl_end = base::TimeTicks::Now();
 
-  SSLClientSocket::NextProtoStatus status =
-      SSLClientSocket::kNextProtoUnsupported;
-  std::string proto;
-  // GetNextProto will fail and and trigger a NOTREACHED if we pass in a socket
-  // that hasn't had SSL_ImportFD called on it. If we get a certificate error
-  // here, then we know that we called SSL_ImportFD.
-  if (result == OK || IsCertificateError(result)) {
-    status = ssl_socket_->GetNextProto(&proto);
-    ssl_socket_->RecordNegotiationExtension();
+  if (result != OK && !server_address_.address().empty()) {
+    connection_attempts_.push_back(ConnectionAttempt(server_address_, result));
+    server_address_ = IPEndPoint();
   }
 
-  // If we want spdy over npn, make sure it succeeded.
-  if (status == SSLClientSocket::kNextProtoNegotiated) {
-    ssl_socket_->set_was_npn_negotiated(true);
-    NextProto protocol_negotiated =
-        SSLClientSocket::NextProtoFromString(proto);
-    ssl_socket_->set_protocol_negotiated(protocol_negotiated);
-    // If we negotiated a SPDY version, it must have been present in
-    // SSLConfig::next_protos.
-    // TODO(mbelshe): Verify this.
-    if (protocol_negotiated >= kProtoSPDYMinimumVersion &&
-        protocol_negotiated <= kProtoSPDYMaximumVersion) {
-      ssl_socket_->set_was_spdy_negotiated(true);
-    }
-  }
-  if (params_->want_spdy_over_npn() && !ssl_socket_->was_spdy_negotiated())
+  // If we want SPDY over ALPN/NPN, make sure it succeeded.
+  if (params_->expect_spdy() &&
+      !NextProtoIsSPDY(ssl_socket_->GetNegotiatedProtocol())) {
     return ERR_NPN_NEGOTIATION_FAILED;
+  }
 
   if (result == OK ||
       ssl_socket_->IgnoreCertError(result, params_->load_flags())) {
     DCHECK(!connect_timing_.ssl_start.is_null());
     base::TimeDelta connect_duration =
         connect_timing_.ssl_end - connect_timing_.ssl_start;
-    if (params_->want_spdy_over_npn()) {
+    if (params_->expect_spdy()) {
       UMA_HISTOGRAM_CUSTOM_TIMES("Net.SpdyConnectionLatency_2",
                                  connect_duration,
                                  base::TimeDelta::FromMilliseconds(1),
@@ -384,9 +372,28 @@ int SSLConnectJob::DoSSLConnectComplete(int result) {
                                                     ssl_info.connection_status),
                               SSL_CONNECTION_VERSION_MAX);
 
-    UMA_HISTOGRAM_SPARSE_SLOWLY("Net.SSL_CipherSuite",
-                                SSLConnectionStatusToCipherSuite(
-                                    ssl_info.connection_status));
+    uint16 cipher_suite =
+        SSLConnectionStatusToCipherSuite(ssl_info.connection_status);
+    UMA_HISTOGRAM_SPARSE_SLOWLY("Net.SSL_CipherSuite", cipher_suite);
+
+    const char *str, *cipher_str, *mac_str;
+    bool is_aead;
+    SSLCipherSuiteToStrings(&str, &cipher_str, &mac_str, &is_aead,
+                            cipher_suite);
+    // UMA_HISTOGRAM_... macros cache the Histogram instance and thus only work
+    // if the histogram name is constant, so don't generate it dynamically.
+    if (strcmp(str, "RSA") == 0) {
+      UMA_HISTOGRAM_SPARSE_SLOWLY("Net.SSL_KeyExchange.RSA",
+                                  ssl_info.key_exchange_info);
+    } else if (strncmp(str, "DHE_", 4) == 0) {
+      UMA_HISTOGRAM_SPARSE_SLOWLY("Net.SSL_KeyExchange.DHE",
+                                  ssl_info.key_exchange_info);
+    } else if (strncmp(str, "ECDHE_", 6) == 0) {
+      UMA_HISTOGRAM_SPARSE_SLOWLY("Net.SSL_KeyExchange.ECDHE",
+                                  ssl_info.key_exchange_info);
+    } else {
+      NOTREACHED();
+    }
 
     if (ssl_info.handshake_type == SSLInfo::HANDSHAKE_RESUME) {
       UMA_HISTOGRAM_CUSTOM_TIMES("Net.SSL_Connection_Latency_Resume_Handshake",
@@ -431,10 +438,6 @@ int SSLConnectJob::DoSSLConnectComplete(int result) {
   }
 
   UMA_HISTOGRAM_SPARSE_SLOWLY("Net.SSL_Connection_Error", std::abs(result));
-  if (params_->ssl_config().fastradio_padding_eligible) {
-    UMA_HISTOGRAM_SPARSE_SLOWLY("Net.SSL_Connection_Error_FastRadioPadding",
-                                std::abs(result));
-  }
 
   if (result == OK || IsCertificateError(result)) {
     SetSocket(ssl_socket_.Pass());
@@ -630,11 +633,11 @@ LoadState SSLClientSocketPool::GetLoadState(
   return base_.GetLoadState(group_name, handle);
 }
 
-base::DictionaryValue* SSLClientSocketPool::GetInfoAsValue(
+scoped_ptr<base::DictionaryValue> SSLClientSocketPool::GetInfoAsValue(
     const std::string& name,
     const std::string& type,
     bool include_nested_pools) const {
-  base::DictionaryValue* dict = base_.GetInfoAsValue(name, type);
+  scoped_ptr<base::DictionaryValue> dict(base_.GetInfoAsValue(name, type));
   if (include_nested_pools) {
     base::ListValue* list = new base::ListValue();
     if (transport_pool_) {
@@ -654,7 +657,7 @@ base::DictionaryValue* SSLClientSocketPool::GetInfoAsValue(
     }
     dict->Set("nested_pools", list);
   }
-  return dict;
+  return dict.Pass();
 }
 
 base::TimeDelta SSLClientSocketPool::ConnectionTimeout() const {

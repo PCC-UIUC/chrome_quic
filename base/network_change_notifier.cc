@@ -6,12 +6,14 @@
 
 #include <limits>
 
-#include "base/metrics/histogram.h"
+#include "base/metrics/histogram_macros.h"
+#include "base/strings/string_util.h"
 #include "base/synchronization/lock.h"
 #include "base/threading/thread_checker.h"
 #include "build/build_config.h"
 #include "net/base/net_util.h"
 #include "net/base/network_change_notifier_factory.h"
+#include "net/base/network_interfaces.h"
 #include "net/dns/dns_config_service.h"
 #include "net/url_request/url_request.h"
 #include "url/gurl.h"
@@ -51,6 +53,9 @@ class MockNetworkChangeNotifier : public NetworkChangeNotifier {
 };
 
 }  // namespace
+
+// static
+bool NetworkChangeNotifier::test_notifications_only_ = false;
 
 // The main observer class that records UMAs for network events.
 class HistogramWatcher
@@ -107,7 +112,7 @@ class HistogramWatcher
       NetworkChangeNotifier::ConnectionType type) override {
     DCHECK(thread_checker_.CalledOnValidThread());
     base::TimeTicks now = base::TimeTicks::Now();
-    int32 kilobytes_read = bytes_read_since_last_connection_change_ / 1000;
+    int32_t kilobytes_read = bytes_read_since_last_connection_change_ / 1000;
     base::TimeDelta state_duration = SinceLast(&last_connection_change_);
     if (bytes_read_since_last_connection_change_) {
       switch (last_connection_type_) {
@@ -305,8 +310,8 @@ class HistogramWatcher
     if (bytes_read > 10000 &&
         request_duration > base::TimeDelta::FromMilliseconds(1) &&
         request.creation_time() > last_connection_change_) {
-      int32 kbps = static_cast<int32>(
-          bytes_read * 8 / request_duration.InMilliseconds());
+      int32_t kbps = static_cast<int32_t>(bytes_read * 8 /
+                                          request_duration.InMilliseconds());
       if (kbps > peak_kbps_since_last_connection_change_)
         peak_kbps_since_last_connection_change_ = kbps;
     }
@@ -360,9 +365,9 @@ class HistogramWatcher
   NetworkChangeNotifier::ConnectionType last_polled_connection_type_;
   // Count of how many times NotifyDataReceived() has been called while the
   // NetworkChangeNotifier thought network connection was offline.
-  int32 offline_packets_received_;
+  int32_t offline_packets_received_;
   // Number of bytes of network data received since last connectivity change.
-  int32 bytes_read_since_last_connection_change_;
+  int32_t bytes_read_since_last_connection_change_;
   // Fastest round-trip-time (RTT) since last connectivity change. RTT measured
   // from URLRequest creation until first byte received.
   base::TimeDelta fastest_RTT_since_last_connection_change_;
@@ -374,7 +379,7 @@ class HistogramWatcher
   // 2) NotifyDataReceived() may be called repeatedly for one URLRequest.
   // 3) The transfer time includes at least one RTT while no bytes are read.
   // Erring on the conservative side is hopefully offset by taking the maximum.
-  int32 peak_kbps_since_last_connection_change_;
+  int32_t peak_kbps_since_last_connection_change_;
 
   base::ThreadChecker thread_checker_;
 
@@ -479,7 +484,7 @@ class NetworkChangeNotifier::NetworkChangeCalculator
   // Value to pass to NotifyObserversOfNetworkChange when Notify is called.
   ConnectionType pending_connection_type_;
   // Used to delay notifications so duplicates can be combined.
-  base::OneShotTimer<NetworkChangeCalculator> timer_;
+  base::OneShotTimer timer_;
 
   base::ThreadChecker thread_checker_;
 
@@ -519,7 +524,7 @@ NetworkChangeNotifier* NetworkChangeNotifier::Create() {
 #endif
   return NULL;
 #elif defined(OS_LINUX)
-  return NetworkChangeNotifierLinux::Create();
+  return new NetworkChangeNotifierLinux(base::hash_set<std::string>());
 #elif defined(OS_MACOSX)
   return new NetworkChangeNotifierMac();
 #else
@@ -537,10 +542,92 @@ NetworkChangeNotifier::GetConnectionType() {
 }
 
 // static
-double NetworkChangeNotifier::GetMaxBandwidth() {
-  return g_network_change_notifier ?
-      g_network_change_notifier->GetCurrentMaxBandwidth() :
-      std::numeric_limits<double>::infinity();
+void NetworkChangeNotifier::GetMaxBandwidthAndConnectionType(
+    double* max_bandwidth_mbps,
+    ConnectionType* connection_type) {
+  if (!g_network_change_notifier) {
+    *connection_type = CONNECTION_UNKNOWN;
+    *max_bandwidth_mbps = GetMaxBandwidthForConnectionSubtype(SUBTYPE_UNKNOWN);
+    return;
+  }
+
+  g_network_change_notifier->GetCurrentMaxBandwidthAndConnectionType(
+      max_bandwidth_mbps, connection_type);
+}
+
+// static
+double NetworkChangeNotifier::GetMaxBandwidthForConnectionSubtype(
+    ConnectionSubtype subtype) {
+  switch (subtype) {
+    case SUBTYPE_GSM:
+      return 0.01;
+    case SUBTYPE_IDEN:
+      return 0.064;
+    case SUBTYPE_CDMA:
+      return 0.115;
+    case SUBTYPE_1XRTT:
+      return 0.153;
+    case SUBTYPE_GPRS:
+      return 0.237;
+    case SUBTYPE_EDGE:
+      return 0.384;
+    case SUBTYPE_UMTS:
+      return 2.0;
+    case SUBTYPE_EVDO_REV_0:
+      return 2.46;
+    case SUBTYPE_EVDO_REV_A:
+      return 3.1;
+    case SUBTYPE_HSPA:
+      return 3.6;
+    case SUBTYPE_EVDO_REV_B:
+      return 14.7;
+    case SUBTYPE_HSDPA:
+      return 14.3;
+    case SUBTYPE_HSUPA:
+      return 14.4;
+    case SUBTYPE_EHRPD:
+      return 21.0;
+    case SUBTYPE_HSPAP:
+      return 42.0;
+    case SUBTYPE_LTE:
+      return 100.0;
+    case SUBTYPE_LTE_ADVANCED:
+      return 100.0;
+    case SUBTYPE_BLUETOOTH_1_2:
+      return 1.0;
+    case SUBTYPE_BLUETOOTH_2_1:
+      return 3.0;
+    case SUBTYPE_BLUETOOTH_3_0:
+      return 24.0;
+    case SUBTYPE_BLUETOOTH_4_0:
+      return 1.0;
+    case SUBTYPE_ETHERNET:
+      return 10.0;
+    case SUBTYPE_FAST_ETHERNET:
+      return 100.0;
+    case SUBTYPE_GIGABIT_ETHERNET:
+      return 1000.0;
+    case SUBTYPE_10_GIGABIT_ETHERNET:
+      return 10000.0;
+    case SUBTYPE_WIFI_B:
+      return 11.0;
+    case SUBTYPE_WIFI_G:
+      return 54.0;
+    case SUBTYPE_WIFI_N:
+      return 600.0;
+    case SUBTYPE_WIFI_AC:
+      return 1300.0;
+    case SUBTYPE_WIFI_AD:
+      return 7000.0;
+    case SUBTYPE_UNKNOWN:
+      return std::numeric_limits<double>::infinity();
+    case SUBTYPE_NONE:
+      return 0.0;
+    case SUBTYPE_OTHER:
+      return std::numeric_limits<double>::infinity();
+  }
+  NOTREACHED();
+  return std::numeric_limits<double>::infinity();
 }
 
 // static
@@ -664,6 +751,12 @@ NetworkChangeNotifier::ConnectionTypeFromInterfaceList(
     if (interfaces[i].friendly_name == "Teredo Tunneling Pseudo-Interface")
       continue;
 #endif
+    // Remove VMware network interfaces as they're internal and should not be
+    // used to determine the network connection type.
+    if (base::ToLowerASCII(interfaces[i].friendly_name).find("vmnet") !=
+        std::string::npos) {
+      continue;
+    }
     if (first) {
       first = false;
       result = interfaces[i].type;
@@ -781,30 +874,42 @@ void NetworkChangeNotifier::NotifyObserversOfInitialDNSConfigReadForTests() {
 }
 
 // static
+void NetworkChangeNotifier::NotifyObserversOfMaxBandwidthChangeForTests(
+    double max_bandwidth_mbps,
+    ConnectionType type) {
+  if (g_network_change_notifier) {
+    g_network_change_notifier->NotifyObserversOfMaxBandwidthChangeImpl(
+        max_bandwidth_mbps, type);
+  }
+}
+
+// static
 void NetworkChangeNotifier::SetTestNotificationsOnly(bool test_only) {
-  if (g_network_change_notifier)
-    g_network_change_notifier->test_notifications_only_ = test_only;
+  DCHECK(!g_network_change_notifier);
+  NetworkChangeNotifier::test_notifications_only_ = test_only;
 }
 
 NetworkChangeNotifier::NetworkChangeNotifier(
     const NetworkChangeCalculatorParams& params
     /*= NetworkChangeCalculatorParams()*/)
-    : ip_address_observer_list_(new ObserverListThreadSafe<IPAddressObserver>(
-          ObserverListBase<IPAddressObserver>::NOTIFY_EXISTING_ONLY)),
+    : ip_address_observer_list_(
+          new base::ObserverListThreadSafe<IPAddressObserver>(
+              base::ObserverListBase<IPAddressObserver>::NOTIFY_EXISTING_ONLY)),
       connection_type_observer_list_(
-          new ObserverListThreadSafe<ConnectionTypeObserver>(
-              ObserverListBase<ConnectionTypeObserver>::NOTIFY_EXISTING_ONLY)),
-      resolver_state_observer_list_(new ObserverListThreadSafe<DNSObserver>(
-          ObserverListBase<DNSObserver>::NOTIFY_EXISTING_ONLY)),
-      network_change_observer_list_(
-          new ObserverListThreadSafe<NetworkChangeObserver>(
-              ObserverListBase<NetworkChangeObserver>::NOTIFY_EXISTING_ONLY)),
-      max_bandwidth_observer_list_(
-          new ObserverListThreadSafe<MaxBandwidthObserver>(
-              ObserverListBase<MaxBandwidthObserver>::NOTIFY_EXISTING_ONLY)),
+          new base::ObserverListThreadSafe<ConnectionTypeObserver>(
+              base::ObserverListBase<
+                  ConnectionTypeObserver>::NOTIFY_EXISTING_ONLY)),
+      resolver_state_observer_list_(
+          new base::ObserverListThreadSafe<DNSObserver>(
+              base::ObserverListBase<DNSObserver>::NOTIFY_EXISTING_ONLY)),
+      network_change_observer_list_(new base::ObserverListThreadSafe<
+                                    NetworkChangeObserver>(
+          base::ObserverListBase<NetworkChangeObserver>::NOTIFY_EXISTING_ONLY)),
+      max_bandwidth_observer_list_(new base::ObserverListThreadSafe<
+                                   MaxBandwidthObserver>(
+          base::ObserverListBase<MaxBandwidthObserver>::NOTIFY_EXISTING_ONLY)),
       network_state_(new NetworkState()),
-      network_change_calculator_(new NetworkChangeCalculator(params)),
-      test_notifications_only_(false) {
+      network_change_calculator_(new NetworkChangeCalculator(params)) {
   DCHECK(!g_network_change_notifier);
   g_network_change_notifier = this;
   network_change_calculator_->Init();
@@ -817,94 +922,23 @@ NetworkChangeNotifier::GetAddressTrackerInternal() const {
 }
 #endif
 
-double NetworkChangeNotifier::GetCurrentMaxBandwidth() const {
+void NetworkChangeNotifier::GetCurrentMaxBandwidthAndConnectionType(
+    double* max_bandwidth_mbps,
+    ConnectionType* connection_type) const {
   // This default implementation conforms to the NetInfo V3 specification but
   // should be overridden to provide specific bandwidth data based on the
   // platform.
-  if (GetCurrentConnectionType() == CONNECTION_NONE)
-    return 0.0;
-  return std::numeric_limits<double>::infinity();
-}
-
-// static
-double NetworkChangeNotifier::GetMaxBandwidthForConnectionSubtype(
-    ConnectionSubtype subtype) {
-  switch (subtype) {
-    case SUBTYPE_GSM:
-      return 0.01;
-    case SUBTYPE_IDEN:
-      return 0.064;
-    case SUBTYPE_CDMA:
-      return 0.115;
-    case SUBTYPE_1XRTT:
-      return 0.153;
-    case SUBTYPE_GPRS:
-      return 0.237;
-    case SUBTYPE_EDGE:
-      return 0.384;
-    case SUBTYPE_UMTS:
-      return 2.0;
-    case SUBTYPE_EVDO_REV_0:
-      return 2.46;
-    case SUBTYPE_EVDO_REV_A:
-      return 3.1;
-    case SUBTYPE_HSPA:
-      return 3.6;
-    case SUBTYPE_EVDO_REV_B:
-      return 14.7;
-    case SUBTYPE_HSDPA:
-      return 14.3;
-    case SUBTYPE_HSUPA:
-      return 14.4;
-    case SUBTYPE_EHRPD:
-      return 21.0;
-    case SUBTYPE_HSPAP:
-      return 42.0;
-    case SUBTYPE_LTE:
-      return 100.0;
-    case SUBTYPE_LTE_ADVANCED:
-      return 100.0;
-    case SUBTYPE_BLUETOOTH_1_2:
-      return 1.0;
-    case SUBTYPE_BLUETOOTH_2_1:
-      return 3.0;
-    case SUBTYPE_BLUETOOTH_3_0:
-      return 24.0;
-    case SUBTYPE_BLUETOOTH_4_0:
-      return 1.0;
-    case SUBTYPE_ETHERNET:
-      return 10.0;
-    case SUBTYPE_FAST_ETHERNET:
-      return 100.0;
-    case SUBTYPE_GIGABIT_ETHERNET:
-      return 1000.0;
-    case SUBTYPE_10_GIGABIT_ETHERNET:
-      return 10000.0;
-    case SUBTYPE_WIFI_B:
-      return 11.0;
-    case SUBTYPE_WIFI_G:
-      return 54.0;
-    case SUBTYPE_WIFI_N:
-      return 600.0;
-    case SUBTYPE_WIFI_AC:
-      return 1300.0;
-    case SUBTYPE_WIFI_AD:
-      return 7000.0;
-    case SUBTYPE_UNKNOWN:
-      return std::numeric_limits<double>::infinity();
-    case SUBTYPE_NONE:
-      return 0.0;
-    case SUBTYPE_OTHER:
-      return std::numeric_limits<double>::infinity();
-  }
-  NOTREACHED();
-  return std::numeric_limits<double>::infinity();
+  *connection_type = GetCurrentConnectionType();
+  *max_bandwidth_mbps =
+      *connection_type == CONNECTION_NONE
+          ? GetMaxBandwidthForConnectionSubtype(SUBTYPE_NONE)
+          : GetMaxBandwidthForConnectionSubtype(SUBTYPE_UNKNOWN);
 }
 
 // static
 void NetworkChangeNotifier::NotifyObserversOfIPAddressChange() {
   if (g_network_change_notifier &&
-      !g_network_change_notifier->test_notifications_only_) {
+      !NetworkChangeNotifier::test_notifications_only_) {
     g_network_change_notifier->NotifyObserversOfIPAddressChangeImpl();
   }
 }
@@ -912,7 +946,7 @@ void NetworkChangeNotifier::NotifyObserversOfIPAddressChange() {
 // static
 void NetworkChangeNotifier::NotifyObserversOfConnectionTypeChange() {
   if (g_network_change_notifier &&
-      !g_network_change_notifier->test_notifications_only_) {
+      !NetworkChangeNotifier::test_notifications_only_) {
     g_network_change_notifier->NotifyObserversOfConnectionTypeChangeImpl(
         GetConnectionType());
   }
@@ -922,25 +956,26 @@ void NetworkChangeNotifier::NotifyObserversOfConnectionTypeChange() {
 void NetworkChangeNotifier::NotifyObserversOfNetworkChange(
     ConnectionType type) {
   if (g_network_change_notifier &&
-      !g_network_change_notifier->test_notifications_only_) {
+      !NetworkChangeNotifier::test_notifications_only_) {
     g_network_change_notifier->NotifyObserversOfNetworkChangeImpl(type);
   }
 }
 
 // static
 void NetworkChangeNotifier::NotifyObserversOfMaxBandwidthChange(
-    double max_bandwidth_mbps) {
+    double max_bandwidth_mbps,
+    ConnectionType type) {
   if (g_network_change_notifier &&
-      !g_network_change_notifier->test_notifications_only_) {
+      !NetworkChangeNotifier::test_notifications_only_) {
     g_network_change_notifier->NotifyObserversOfMaxBandwidthChangeImpl(
-        max_bandwidth_mbps);
+        max_bandwidth_mbps, type);
   }
 }
 
 // static
 void NetworkChangeNotifier::NotifyObserversOfDNSChange() {
   if (g_network_change_notifier &&
-      !g_network_change_notifier->test_notifications_only_) {
+      !NetworkChangeNotifier::test_notifications_only_) {
     g_network_change_notifier->NotifyObserversOfDNSChangeImpl();
   }
 }
@@ -948,7 +983,7 @@ void NetworkChangeNotifier::NotifyObserversOfDNSChange() {
 // static
 void NetworkChangeNotifier::NotifyObserversOfInitialDNSConfigRead() {
   if (g_network_change_notifier &&
-      !g_network_change_notifier->test_notifications_only_) {
+      !NetworkChangeNotifier::test_notifications_only_) {
     g_network_change_notifier->NotifyObserversOfInitialDNSConfigReadImpl();
   }
 }
@@ -1002,10 +1037,11 @@ void NetworkChangeNotifier::NotifyObserversOfInitialDNSConfigReadImpl() {
 }
 
 void NetworkChangeNotifier::NotifyObserversOfMaxBandwidthChangeImpl(
-    double max_bandwidth_mbps) {
+    double max_bandwidth_mbps,
+    ConnectionType type) {
   max_bandwidth_observer_list_->Notify(
       FROM_HERE, &MaxBandwidthObserver::OnMaxBandwidthChanged,
-      max_bandwidth_mbps);
+      max_bandwidth_mbps, type);
 }
 
 NetworkChangeNotifier::DisableForTest::DisableForTest()

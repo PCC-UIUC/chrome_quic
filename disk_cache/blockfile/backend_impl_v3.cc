@@ -11,8 +11,8 @@
 #include "base/hash.h"
 #include "base/message_loop/message_loop.h"
 #include "base/metrics/field_trial.h"
-#include "base/metrics/histogram.h"
 #include "base/rand_util.h"
+#include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
 #include "base/sys_info.h"
@@ -691,19 +691,19 @@ void BackendImplV3::GetStats(StatsItems* stats) {
   std::pair<std::string, std::string> item;
 
   item.first = "Entries";
-  item.second = base::StringPrintf("%d", data_->header.num_entries);
+  item.second = base::IntToString(data_->header.num_entries);
   stats->push_back(item);
 
   item.first = "Pending IO";
-  item.second = base::StringPrintf("%d", num_pending_io_);
+  item.second = base::IntToString(num_pending_io_);
   stats->push_back(item);
 
   item.first = "Max size";
-  item.second = base::StringPrintf("%d", max_size_);
+  item.second = base::IntToString(max_size_);
   stats->push_back(item);
 
   item.first = "Current size";
-  item.second = base::StringPrintf("%d", data_->header.num_bytes);
+  item.second = base::IntToString(data_->header.num_bytes);
   stats->push_back(item);
 
   item.first = "Cache type";
@@ -1026,7 +1026,7 @@ int BackendImplV3::SyncInit() {
     trace_object_ = TraceObject::GetTraceObject();
     // Create a recurrent timer of 30 secs.
     int timer_delay = unit_test_ ? 1000 : 30000;
-    timer_.reset(new base::RepeatingTimer<BackendImplV3>());
+    timer_.reset(new base::RepeatingTimer());
     timer_->Start(FROM_HERE, TimeDelta::FromMilliseconds(timer_delay), this,
                   &BackendImplV3::OnStatsTimer);
   }

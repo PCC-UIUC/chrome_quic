@@ -9,7 +9,9 @@
 #include "base/compiler_specific.h"
 #include "base/files/file_path.h"
 #include "base/path_service.h"
+#include "base/single_thread_task_runner.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/thread_task_runner_handle.h"
 #include "net/base/filename_util.h"
 #include "net/base/load_flags.h"
 #include "net/base/network_delegate_impl.h"
@@ -59,8 +61,9 @@ class RequestContext : public URLRequestContext {
   RequestContext() : storage_(this) {
     ProxyConfig no_proxy;
     storage_.set_host_resolver(scoped_ptr<HostResolver>(new MockHostResolver));
-    storage_.set_cert_verifier(new MockCertVerifier);
-    storage_.set_transport_security_state(new TransportSecurityState);
+    storage_.set_cert_verifier(make_scoped_ptr(new MockCertVerifier));
+    storage_.set_transport_security_state(
+        make_scoped_ptr(new TransportSecurityState));
     storage_.set_proxy_service(ProxyService::CreateFixed(no_proxy));
     storage_.set_ssl_config_service(new SSLConfigServiceDefaults);
     storage_.set_http_server_properties(
@@ -75,14 +78,18 @@ class RequestContext : public URLRequestContext {
     params.http_server_properties = http_server_properties();
     scoped_refptr<HttpNetworkSession> network_session(
         new HttpNetworkSession(params));
-    storage_.set_http_transaction_factory(new HttpCache(
-        network_session.get(), HttpCache::DefaultBackend::InMemory(0)));
-    URLRequestJobFactoryImpl* job_factory = new URLRequestJobFactoryImpl();
+    storage_.set_http_transaction_factory(
+        make_scoped_ptr(new HttpCache(network_session.get(),
+                                      HttpCache::DefaultBackend::InMemory(0)))
+            .Pass());
+    scoped_ptr<URLRequestJobFactoryImpl> job_factory =
+        make_scoped_ptr(new URLRequestJobFactoryImpl());
 #if !defined(DISABLE_FILE_SUPPORT)
-    job_factory->SetProtocolHandler(
-        "file", new FileProtocolHandler(base::MessageLoopProxy::current()));
+    job_factory->SetProtocolHandler("file",
+                                    make_scoped_ptr(new FileProtocolHandler(
+                                        base::ThreadTaskRunnerHandle::Get())));
 #endif
-    storage_.set_job_factory(job_factory);
+    storage_.set_job_factory(job_factory.Pass());
   }
 
   ~RequestContext() override { AssertNoURLRequests(); }
@@ -144,8 +151,6 @@ class BasicNetworkDelegate : public NetworkDelegateImpl {
 
   void OnResponseStarted(URLRequest* request) override {}
 
-  void OnRawBytesRead(const URLRequest& request, int bytes_read) override {}
-
   void OnCompleted(URLRequest* request, bool started) override {}
 
   void OnURLRequestDestroyed(URLRequest* request) override {}
@@ -175,9 +180,6 @@ class BasicNetworkDelegate : public NetworkDelegateImpl {
   bool OnCanAccessFile(const URLRequest& request,
                        const base::FilePath& path) const override {
     return true;
-  }
-  bool OnCanThrottleRequest(const URLRequest& request) const override {
-    return false;
   }
 
   DISALLOW_COPY_AND_ASSIGN(BasicNetworkDelegate);

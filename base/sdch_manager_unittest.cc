@@ -29,10 +29,18 @@ static const char kTestVcdiffDictionary[] = "DictionaryFor"
 class MockSdchObserver : public SdchObserver {
  public:
   MockSdchObserver()
-      : dictionary_used_notifications_(0),
+      : dictionary_added_notifications_(0),
+        dictionary_removed_notifications_(0),
+        dictionary_used_notifications_(0),
         get_dictionary_notifications_(0),
         clear_dictionaries_notifications_(0) {}
 
+  int dictionary_added_notifications() const {
+    return dictionary_added_notifications_;
+  }
+  int dictionary_removed_notifications() const {
+    return dictionary_removed_notifications_;
+  }
   std::string last_server_hash() const { return last_server_hash_; }
   int dictionary_used_notifications() const {
     return dictionary_used_notifications_;
@@ -50,24 +58,34 @@ class MockSdchObserver : public SdchObserver {
   }
 
   // SdchObserver implementation
-  void OnDictionaryUsed(SdchManager* manager,
-                        const std::string& server_hash) override {
+  void OnDictionaryAdded(const GURL& dictionary_url,
+                         const std::string& server_hash) override {
+    last_server_hash_ = server_hash;
+    last_dictionary_url_ = dictionary_url;
+    ++dictionary_added_notifications_;
+  }
+  void OnDictionaryRemoved(const std::string& server_hash) override {
+    last_server_hash_ = server_hash;
+    ++dictionary_removed_notifications_;
+  }
+  void OnDictionaryUsed(const std::string& server_hash) override {
     last_server_hash_ = server_hash;
     ++dictionary_used_notifications_;
   }
 
-  void OnGetDictionary(SdchManager* manager,
-                       const GURL& request_url,
+  void OnGetDictionary(const GURL& request_url,
                        const GURL& dictionary_url) override {
     ++get_dictionary_notifications_;
     last_dictionary_request_url_ = request_url;
     last_dictionary_url_ = dictionary_url;
   }
-  void OnClearDictionaries(SdchManager* manager) override {
+  void OnClearDictionaries() override {
     ++clear_dictionaries_notifications_;
   }
 
  private:
+  int dictionary_added_notifications_;
+  int dictionary_removed_notifications_;
   int dictionary_used_notifications_;
   int get_dictionary_notifications_;
   int clear_dictionaries_notifications_;
@@ -82,22 +100,11 @@ class MockSdchObserver : public SdchObserver {
 class SdchManagerTest : public testing::Test {
  protected:
   SdchManagerTest()
-      : sdch_manager_(new SdchManager),
-        default_support_(false),
-        default_https_support_(false) {
-    default_support_ = sdch_manager_->sdch_enabled();
-    default_https_support_ = sdch_manager_->secure_scheme_supported();
-  }
+      : sdch_manager_(new SdchManager) {}
 
   ~SdchManagerTest() override {}
 
   SdchManager* sdch_manager() { return sdch_manager_.get(); }
-
-  // Reset globals back to default state.
-  void TearDown() override {
-    SdchManager::EnableSdchSupport(default_support_);
-    SdchManager::EnableSecureSchemeSupport(default_https_support_);
-  }
 
   // Attempt to add a dictionary to the manager and probe for success or
   // failure.
@@ -109,8 +116,6 @@ class SdchManagerTest : public testing::Test {
 
  private:
   scoped_ptr<SdchManager> sdch_manager_;
-  bool default_support_;
-  bool default_https_support_;
 };
 
 static std::string NewSdchDictionary(const std::string& domain) {
@@ -128,9 +133,6 @@ static std::string NewSdchDictionary(const std::string& domain) {
 TEST_F(SdchManagerTest, DomainSupported) {
   GURL google_url("http://www.google.com");
 
-  SdchManager::EnableSdchSupport(false);
-  EXPECT_EQ(SDCH_DISABLED, sdch_manager()->IsInSupportedDomain(google_url));
-  SdchManager::EnableSdchSupport(true);
   EXPECT_EQ(SDCH_OK, sdch_manager()->IsInSupportedDomain(google_url));
 }
 
@@ -250,10 +252,6 @@ TEST_F(SdchManagerTest, CanUseHTTPSDictionaryOverHTTPSIfEnabled) {
   std::string dictionary_domain("x.y.z.google.com");
   std::string dictionary_text(NewSdchDictionary(dictionary_domain));
 
-  SdchManager::EnableSecureSchemeSupport(false);
-  EXPECT_FALSE(AddSdchDictionary(dictionary_text,
-                                 GURL("https://" + dictionary_domain)));
-  SdchManager::EnableSecureSchemeSupport(true);
   EXPECT_TRUE(AddSdchDictionary(dictionary_text,
                                 GURL("https://" + dictionary_domain)));
 
@@ -285,7 +283,6 @@ TEST_F(SdchManagerTest, CanNotUseHTTPDictionaryOverHTTPS) {
   GURL target_url("https://" + dictionary_domain + "/test");
   // HTTPS target URL should not advertise dictionary acquired over HTTP even if
   // secure scheme support is enabled.
-  SdchManager::EnableSecureSchemeSupport(true);
   EXPECT_FALSE(sdch_manager()->GetDictionarySet(target_url));
 
   std::string client_hash;
@@ -303,7 +300,6 @@ TEST_F(SdchManagerTest, CanNotUseHTTPSDictionaryOverHTTP) {
   std::string dictionary_domain("x.y.z.google.com");
   std::string dictionary_text(NewSdchDictionary(dictionary_domain));
 
-  SdchManager::EnableSecureSchemeSupport(true);
   EXPECT_TRUE(AddSdchDictionary(dictionary_text,
                                 GURL("https://" + dictionary_domain)));
 
@@ -500,23 +496,6 @@ TEST_F(SdchManagerTest, CanUseMultipleManagers) {
   EXPECT_EQ(SDCH_DICTIONARY_HASH_NOT_FOUND, problem_code);
 }
 
-TEST_F(SdchManagerTest, HttpsCorrectlySupported) {
-  GURL url("http://www.google.com");
-  GURL secure_url("https://www.google.com");
-
-  bool expect_https_support = true;
-
-  SdchProblemCode expected_code =
-      expect_https_support ? SDCH_OK : SDCH_SECURE_SCHEME_NOT_SUPPORTED;
-
-  EXPECT_EQ(SDCH_OK, sdch_manager()->IsInSupportedDomain(url));
-  EXPECT_EQ(expected_code, sdch_manager()->IsInSupportedDomain(secure_url));
-
-  SdchManager::EnableSecureSchemeSupport(!expect_https_support);
-  EXPECT_EQ(SDCH_OK, sdch_manager()->IsInSupportedDomain(url));
-  EXPECT_NE(expected_code, sdch_manager()->IsInSupportedDomain(secure_url));
-}
-
 TEST_F(SdchManagerTest, ClearDictionaryData) {
   std::string dictionary_domain("x.y.z.google.com");
   GURL blacklist_url("http://bad.chromium.org");
@@ -602,15 +581,6 @@ TEST_F(SdchManagerTest, ExpirationCheckedProperly) {
   EXPECT_EQ(SDCH_OK, problem_code);
 }
 
-TEST_F(SdchManagerTest, SdchOnByDefault) {
-  GURL google_url("http://www.google.com");
-  scoped_ptr<SdchManager> sdch_manager(new SdchManager);
-
-  EXPECT_EQ(SDCH_OK, sdch_manager->IsInSupportedDomain(google_url));
-  SdchManager::EnableSdchSupport(false);
-  EXPECT_EQ(SDCH_DISABLED, sdch_manager->IsInSupportedDomain(google_url));
-}
-
 // Confirm dispatch of notification.
 TEST_F(SdchManagerTest, SdchDictionaryUsed) {
   MockSdchObserver observer;
@@ -628,19 +598,37 @@ TEST_F(SdchManagerTest, SdchDictionaryUsed) {
   std::string server_hash;
   SdchManager::GenerateHash(dictionary_text, &client_hash, &server_hash);
   EXPECT_TRUE(AddSdchDictionary(dictionary_text, target_gurl));
-  EXPECT_EQ("xyzzy", observer.last_server_hash());
   EXPECT_EQ(1, observer.dictionary_used_notifications());
 
   EXPECT_TRUE(sdch_manager()->GetDictionarySet(target_gurl));
-  EXPECT_EQ("xyzzy", observer.last_server_hash());
   EXPECT_EQ(1, observer.dictionary_used_notifications());
 
   sdch_manager()->RemoveObserver(&observer);
   EXPECT_EQ(1, observer.dictionary_used_notifications());
-  EXPECT_EQ("xyzzy", observer.last_server_hash());
   sdch_manager()->OnDictionaryUsed("plugh");
   EXPECT_EQ(1, observer.dictionary_used_notifications());
-  EXPECT_EQ("xyzzy", observer.last_server_hash());
+}
+
+TEST_F(SdchManagerTest, AddRemoveNotifications) {
+  MockSdchObserver observer;
+  sdch_manager()->AddObserver(&observer);
+
+  std::string dictionary_domain("x.y.z.google.com");
+  GURL target_gurl("http://" + dictionary_domain);
+  std::string dictionary_text(NewSdchDictionary(dictionary_domain));
+  std::string client_hash;
+  std::string server_hash;
+  SdchManager::GenerateHash(dictionary_text, &client_hash, &server_hash);
+  EXPECT_TRUE(AddSdchDictionary(dictionary_text, target_gurl));
+  EXPECT_EQ(1, observer.dictionary_added_notifications());
+  EXPECT_EQ(target_gurl, observer.last_dictionary_url());
+  EXPECT_EQ(server_hash, observer.last_server_hash());
+
+  EXPECT_EQ(SDCH_OK, sdch_manager()->RemoveSdchDictionary(server_hash));
+  EXPECT_EQ(1, observer.dictionary_removed_notifications());
+  EXPECT_EQ(server_hash, observer.last_server_hash());
+
+  sdch_manager()->RemoveObserver(&observer);
 }
 
 }  // namespace net

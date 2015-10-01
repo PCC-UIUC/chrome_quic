@@ -45,7 +45,6 @@ QuicErrorCode ReadUint32(const CryptoHandshakeMessage& msg,
   return error;
 }
 
-
 QuicConfigValue::QuicConfigValue(QuicTag tag,
                                  QuicConfigPresence presence)
     : tag_(tag),
@@ -353,7 +352,6 @@ QuicConfig::QuicConfig()
     : max_time_before_crypto_handshake_(QuicTime::Delta::Zero()),
       max_idle_time_before_crypto_handshake_(QuicTime::Delta::Zero()),
       max_undecryptable_packets_(0),
-      congestion_feedback_(kCGST, PRESENCE_OPTIONAL),
       connection_options_(kCOPT, PRESENCE_OPTIONAL),
       idle_connection_state_lifetime_seconds_(kICSL, PRESENCE_REQUIRED),
       silent_close_(kSCLS, PRESENCE_OPTIONAL),
@@ -367,6 +365,17 @@ QuicConfig::QuicConfig()
 }
 
 QuicConfig::~QuicConfig() {}
+
+bool QuicConfig::SetInitialReceivedConnectionOptions(
+    const QuicTagVector& tags) {
+  if (HasReceivedConnectionOptions()) {
+    // If we have already received connection options (via handshake or due to a
+    // previous call), don't re-initialize.
+    return false;
+  }
+  connection_options_.SetReceivedValues(tags);
+  return true;
+}
 
 void QuicConfig::SetConnectionOptionsToSend(
     const QuicTagVector& connection_options) {
@@ -387,6 +396,20 @@ bool QuicConfig::HasSendConnectionOptions() const {
 
 QuicTagVector QuicConfig::SendConnectionOptions() const {
   return connection_options_.GetSendValues();
+}
+
+bool QuicConfig::HasClientSentConnectionOption(QuicTag tag,
+                                               Perspective perspective) const {
+  if (perspective == Perspective::IS_SERVER) {
+    if (HasReceivedConnectionOptions() &&
+        ContainsQuicTag(ReceivedConnectionOptions(), tag)) {
+      return true;
+    }
+  } else if (HasSendConnectionOptions() &&
+             ContainsQuicTag(SendConnectionOptions(), tag)) {
+    return true;
+  }
+  return false;
 }
 
 void QuicConfig::SetIdleConnectionStateLifetime(
@@ -521,13 +544,6 @@ bool QuicConfig::negotiated() const {
 }
 
 void QuicConfig::SetDefaults() {
-  QuicTagVector congestion_feedback;
-  // TODO(alyssar) stop sending this once QUIC_VERSION_23 is sunset.
-  // This field was required until version 22 was removed but by the time
-  // QUIC_VERSION_23 is sunset, no users of QUIC_VERSION_24 should be expecting
-  // it.
-  congestion_feedback.push_back(kQBIC);
-  congestion_feedback_.set(congestion_feedback, kQBIC);
   idle_connection_state_lifetime_seconds_.set(kMaximumIdleTimeoutSecs,
                                               kDefaultIdleTimeoutSecs);
   silent_close_.set(1, 0);
@@ -544,7 +560,6 @@ void QuicConfig::SetDefaults() {
 }
 
 void QuicConfig::ToHandshakeMessage(CryptoHandshakeMessage* out) const {
-  congestion_feedback_.ToHandshakeMessage(out);
   idle_connection_state_lifetime_seconds_.ToHandshakeMessage(out);
   silent_close_.ToHandshakeMessage(out);
   max_streams_per_connection_.ToHandshakeMessage(out);

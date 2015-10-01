@@ -4,6 +4,9 @@
 
 #include "net/ssl/ssl_cipher_suite_names.h"
 
+#if defined(USE_OPENSSL)
+#include <openssl/ssl.h>
+#endif
 #include <stdlib.h>
 
 #include "base/logging.h"
@@ -248,13 +251,13 @@ const struct {
 };
 
 const struct {
-  char name[7];
+  char name[12];
 } kMacNames[5] = {
   {"NULL"},  // 0
-  {"MD5"},  // 1
-  {"SHA1"},  // 2
-  {"SHA256"},  // 3
-  {"SHA384"},  // 4
+  {"HMAC-MD5"},  // 1
+  {"HMAC-SHA1"},  // 2
+  {"HMAC-SHA256"},  // 3
+  {"HMAC-SHA384"},  // 4
   // 7 is reserved to indicate an AEAD cipher suite.
 };
 
@@ -349,7 +352,8 @@ bool ParseSSLCipherString(const std::string& cipher_string,
                           uint16* cipher_suite) {
   int value = 0;
   if (cipher_string.size() == 6 &&
-      StartsWithASCII(cipher_string, "0x", false /* case insensitive */) &&
+      base::StartsWith(cipher_string, "0x",
+                       base::CompareCase::INSENSITIVE_ASCII) &&
       base::HexStringToInt(cipher_string, &value)) {
     *cipher_suite = static_cast<uint16>(value);
     return true;
@@ -416,6 +420,24 @@ bool IsFalseStartableTLSCipherSuite(uint16 cipher_suite) {
     return false;
 
   return true;
+}
+
+const char* ECCurveName(uint16 cipher_suite, int key_exchange_info) {
+#if defined(USE_OPENSSL)
+  int key_exchange, cipher, mac;
+  if (!GetCipherProperties(cipher_suite, &key_exchange, &cipher, &mac))
+    return nullptr;
+  switch (key_exchange) {
+    case 14:  // ECDHE_ECDSA
+    case 16:  // ECDHE_RSA
+      break;
+    default:
+      return nullptr;
+  }
+  return SSL_get_curve_name(key_exchange_info);
+#else
+  return nullptr;
+#endif
 }
 
 }  // namespace net

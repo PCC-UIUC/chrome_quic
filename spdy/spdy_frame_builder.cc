@@ -136,8 +136,9 @@ bool SpdyFrameBuilder::WriteStringPiece16(const base::StringPiece& value) {
     return false;
   }
 
-  if (!WriteUInt16(static_cast<uint16>(value.size())))
+  if (!WriteUInt16(static_cast<uint16>(value.size()))) {
     return false;
+  }
 
   return WriteBytes(value.data(), static_cast<uint16>(value.size()));
 }
@@ -168,7 +169,7 @@ bool SpdyFrameBuilder::RewriteLength(const SpdyFramer& framer) {
 
 bool SpdyFrameBuilder::OverwriteLength(const SpdyFramer& framer,
                                        size_t length) {
-  if (version_ < SPDY4) {
+  if (version_ < HTTP2) {
     DCHECK_LE(length,
               SpdyConstants::GetFrameMaximumSize(version_) -
                   framer.GetFrameMinimumSize());
@@ -178,7 +179,7 @@ bool SpdyFrameBuilder::OverwriteLength(const SpdyFramer& framer,
   bool success = false;
   const size_t old_length = length_;
 
-  if (version_ < SPDY4) {
+  if (version_ < HTTP2) {
     FlagsAndLength flags_length = CreateFlagsAndLength(
         0,  // We're not writing over the flags value anyway.
         length);

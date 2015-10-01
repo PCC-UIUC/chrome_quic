@@ -8,6 +8,7 @@
 #include <qos2.h>
 #include <winsock2.h>
 
+#include "base/gtest_prod_util.h"
 #include "base/memory/ref_counted.h"
 #include "base/memory/scoped_ptr.h"
 #include "base/threading/non_thread_safe.h"
@@ -18,6 +19,7 @@
 #include "net/base/io_buffer.h"
 #include "net/base/ip_endpoint.h"
 #include "net/base/net_export.h"
+#include "net/base/net_util.h"
 #include "net/base/rand_callback.h"
 #include "net/log/net_log.h"
 #include "net/udp/datagram_socket.h"

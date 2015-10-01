@@ -4,6 +4,7 @@
 
 #include "net/tools/quic/quic_simple_per_connection_packet_writer.h"
 
+#include "base/bind.h"
 #include "net/tools/quic/quic_simple_server_packet_writer.h"
 
 namespace net {
@@ -51,9 +52,14 @@ void QuicSimplePerConnectionPacketWriter::SetWritable() {
 }
 
 void QuicSimplePerConnectionPacketWriter::OnWriteComplete(WriteResult result) {
-  if (result.status == WRITE_STATUS_ERROR) {
+  if (connection_ && result.status == WRITE_STATUS_ERROR) {
     connection_->OnWriteError(result.error_code);
   }
+}
+
+QuicByteCount QuicSimplePerConnectionPacketWriter::GetMaxPacketSize(
+    const IPEndPoint& peer_address) const {
+  return shared_writer_->GetMaxPacketSize(peer_address);
 }
 
 }  // namespace tools

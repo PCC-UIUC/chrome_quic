@@ -13,6 +13,7 @@
 #include "base/strings/sys_string_conversions.h"
 #include "net/base/net_errors.h"
 #include "net/proxy/proxy_info.h"
+#include "net/proxy/proxy_resolver.h"
 #include "net/proxy/proxy_server.h"
 
 #if defined(OS_IOS)
@@ -62,10 +63,30 @@ void ResultCallback(void* client, CFArrayRef proxies, CFErrorRef error) {
   CFRunLoopStop(CFRunLoopGetCurrent());
 }
 
-}  // namespace
+class ProxyResolverMac : public ProxyResolver {
+ public:
+  explicit ProxyResolverMac(
+      const scoped_refptr<ProxyResolverScriptData>& script_data);
+  ~ProxyResolverMac() override;
 
-ProxyResolverMac::ProxyResolverMac()
-    : ProxyResolver(false /*expects_pac_bytes*/) {
+  // ProxyResolver methods:
+  int GetProxyForURL(const GURL& url,
+                     ProxyInfo* results,
+                     const CompletionCallback& callback,
+                     RequestHandle* request,
+                     const BoundNetLog& net_log) override;
+
+  void CancelRequest(RequestHandle request) override;
+
+  LoadState GetLoadState(RequestHandle request) const override;
+
+ private:
+  const scoped_refptr<ProxyResolverScriptData> script_data_;
+};
+
+ProxyResolverMac::ProxyResolverMac(
+    const scoped_refptr<ProxyResolverScriptData>& script_data)
+    : script_data_(script_data) {
 }
 
 ProxyResolverMac::~ProxyResolverMac() {}
@@ -96,8 +117,10 @@ int ProxyResolverMac::GetProxyForURL(const GURL& query_url,
   // CFNetworkCopyProxiesForURL initializes some state within CFNetwork that is
   // required by CFNetworkExecuteProxyAutoConfigurationURL.
 
-  CFArrayRef dummy_result = CFNetworkCopyProxiesForURL(query_url_ref.get(),
-                                                       NULL);
+  base::ScopedCFTypeRef<CFDictionaryRef> empty_dictionary(
+      CFDictionaryCreate(NULL, NULL, NULL, 0, NULL, NULL));
+  CFArrayRef dummy_result =
+      CFNetworkCopyProxiesForURL(query_url_ref.get(), empty_dictionary);
   if (dummy_result)
     CFRelease(dummy_result);
 
@@ -189,14 +212,18 @@ LoadState ProxyResolverMac::GetLoadState(RequestHandle request) const {
   return LOAD_STATE_IDLE;
 }
 
-void ProxyResolverMac::CancelSetPacScript() {
-  NOTREACHED();
+}  // namespace
+
+ProxyResolverFactoryMac::ProxyResolverFactoryMac()
+    : ProxyResolverFactory(false /*expects_pac_bytes*/) {
 }
 
-int ProxyResolverMac::SetPacScript(
-    const scoped_refptr<ProxyResolverScriptData>& script_data,
-    const CompletionCallback& /*callback*/) {
-  script_data_ = script_data;
+int ProxyResolverFactoryMac::CreateProxyResolver(
+    const scoped_refptr<ProxyResolverScriptData>& pac_script,
+    scoped_ptr<ProxyResolver>* resolver,
+    const CompletionCallback& callback,
+    scoped_ptr<Request>* request) {
+  resolver->reset(new ProxyResolverMac(pac_script));
   return OK;
 }
 

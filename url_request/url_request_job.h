@@ -5,6 +5,8 @@
 #ifndef NET_URL_REQUEST_URL_REQUEST_JOB_H_
 #define NET_URL_REQUEST_URL_REQUEST_JOB_H_
 
+#include <stdint.h>
+
 #include <string>
 #include <vector>
 
@@ -19,6 +21,7 @@
 #include "net/base/request_priority.h"
 #include "net/base/upload_progress.h"
 #include "net/cookies/canonical_cookie.h"
+#include "net/socket/connection_attempts.h"
 #include "net/url_request/redirect_info.h"
 #include "net/url_request/url_request.h"
 #include "url/gurl.h"
@@ -108,8 +111,13 @@ class NET_EXPORT URLRequestJob
 
   virtual bool GetFullRequestHeaders(HttpRequestHeaders* headers) const;
 
-  // Get the number of bytes received from network.
-  virtual int64 GetTotalReceivedBytes() const;
+  // Get the number of bytes received from network. The values returned by this
+  // will never decrease over the lifetime of the URLRequestJob.
+  virtual int64_t GetTotalReceivedBytes() const;
+
+  // Get the number of bytes sent over the network. The values returned by this
+  // will never decrease over the lifetime of the URLRequestJob.
+  virtual int64_t GetTotalSentBytes() const;
 
   // Called to fetch the current load state for the job.
   virtual LoadState GetLoadState() const;
@@ -129,6 +137,11 @@ class NET_EXPORT URLRequestJob
   // each event blocked the request.  See FixupLoadTimingInfo in url_request.h
   // for more information on the difference.
   virtual void GetLoadTimingInfo(LoadTimingInfo* load_timing_info) const;
+
+  // Gets the remote endpoint that the network stack is currently fetching the
+  // URL from. Returns true and fills in |endpoint| if it is available; returns
+  // false and leaves |endpoint| unchanged if it is unavailable.
+  virtual bool GetRemoteEndpoint(IPEndPoint* endpoint) const;
 
   // Returns the cookie values included in the response, if applicable.
   // Returns true if applicable.
@@ -225,6 +238,11 @@ class NET_EXPORT URLRequestJob
   // exist at destruction time of the URLRequestJob, unless they have been
   // canceled by an explicit NetworkDelegate::NotifyURLRequestDestroyed() call.
   virtual void NotifyURLRequestDestroyed();
+
+  // Populates |out| with the connection attempts made at the socket layer in
+  // the course of executing the URLRequestJob. Should be called after the job
+  // has failed or the response headers have been received.
+  virtual void GetConnectionAttempts(ConnectionAttempts* out) const;
 
   // Given |policy|, |referrer|, and |redirect_destination|, returns the
   // referrer URL mandated by |request|'s referrer policy.
@@ -389,6 +407,11 @@ class NET_EXPORT URLRequestJob
   // |location| and |http_status_code|.
   RedirectInfo ComputeRedirectInfo(const GURL& location, int http_status_code);
 
+  // Notify the network delegate that more bytes have been received or sent over
+  // the network, if bytes have been received or sent since the previous
+  // notification.
+  void MaybeNotifyNetworkBytes();
+
   // Indicates that the job is done producing data, either it has completed
   // all the data or an error has been encountered. Set exclusively by
   // NotifyDone so that it is kept in sync with the request.
@@ -427,6 +450,16 @@ class NET_EXPORT URLRequestJob
 
   // The network delegate to use with this request, if any.
   NetworkDelegate* network_delegate_;
+
+  // The value from GetTotalReceivedBytes() the last time
+  // MaybeNotifyNetworkBytes() was called. Used to calculate how bytes have been
+  // newly received since the last notification.
+  int64_t last_notified_total_received_bytes_;
+
+  // The value from GetTotalSentBytes() the last time MaybeNotifyNetworkBytes()
+  // was called. Used to calculate how bytes have been newly sent since the last
+  // notification.
+  int64_t last_notified_total_sent_bytes_;
 
   base::WeakPtrFactory<URLRequestJob> weak_factory_;
 

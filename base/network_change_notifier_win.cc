@@ -9,7 +9,7 @@
 
 #include "base/bind.h"
 #include "base/logging.h"
-#include "base/metrics/histogram.h"
+#include "base/metrics/histogram_macros.h"
 #include "base/threading/thread.h"
 #include "base/time/time.h"
 #include "net/base/winsock_init.h"
@@ -51,11 +51,11 @@ NetworkChangeNotifierWin::NetworkChangeNotifierWin()
     : NetworkChangeNotifier(NetworkChangeCalculatorParamsWin()),
       is_watching_(false),
       sequential_failures_(0),
-      weak_factory_(this),
       dns_config_service_thread_(new DnsConfigServiceThread()),
       last_computed_connection_type_(RecomputeCurrentConnectionType()),
-      last_announced_offline_(
-          last_computed_connection_type_ == CONNECTION_NONE) {
+      last_announced_offline_(last_computed_connection_type_ ==
+                              CONNECTION_NONE),
+      weak_factory_(this) {
   memset(&addr_overlapped_, 0, sizeof addr_overlapped_);
   addr_overlapped_.hEvent = WSACreateEvent();
 }
@@ -296,7 +296,7 @@ bool NetworkChangeNotifierWin::WatchForAddressChangeInternal() {
   if (ret != ERROR_IO_PENDING)
     return false;
 
-  addr_watcher_.StartWatching(addr_overlapped_.hEvent, this);
+  addr_watcher_.StartWatchingOnce(addr_overlapped_.hEvent, this);
   return true;
 }
 
@@ -318,6 +318,11 @@ void NetworkChangeNotifierWin::NotifyParentOfConnectionTypeChange() {
   last_announced_offline_ = current_offline;
 
   NotifyObserversOfConnectionTypeChange();
+  double max_bandwidth_mbps = 0.0;
+  ConnectionType connection_type = CONNECTION_NONE;
+  GetCurrentMaxBandwidthAndConnectionType(&max_bandwidth_mbps,
+                                          &connection_type);
+  NotifyObserversOfMaxBandwidthChange(max_bandwidth_mbps, connection_type);
 }
 
 }  // namespace net

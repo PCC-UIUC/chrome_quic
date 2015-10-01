@@ -4,7 +4,6 @@
 
 // See network_change_notifier_android.h for design explanations.
 
-#include "base/basictypes.h"
 #include "base/bind.h"
 #include "base/callback.h"
 #include "base/compiler_specific.h"
@@ -29,7 +28,9 @@ class NetworkChangeNotifierDelegateAndroidObserver
   // NetworkChangeNotifierDelegateAndroid::Observer:
   void OnConnectionTypeChanged() override { type_notifications_count_++; }
 
-  void OnMaxBandwidthChanged(double max_bandwidth_mbps) override {
+  void OnMaxBandwidthChanged(
+      double max_bandwidth_mbps,
+      net::NetworkChangeNotifier::ConnectionType type) override {
     max_bandwidth_notifications_count_++;
   }
 
@@ -123,7 +124,8 @@ class BaseNetworkChangeNotifierAndroidTest : public testing::Test {
 
   void SetOnline() {
     delegate_.SetOnline();
-    // Note that this is needed because ObserverListThreadSafe uses PostTask().
+    // Note that this is needed because base::ObserverListThreadSafe uses
+    // PostTask().
     base::MessageLoop::current()->RunUntilIdle();
   }
 
@@ -248,14 +250,18 @@ TEST_F(NetworkChangeNotifierAndroidTest,
 
 TEST_F(NetworkChangeNotifierAndroidTest, MaxBandwidth) {
   SetOnline();
-  EXPECT_EQ(NetworkChangeNotifier::CONNECTION_UNKNOWN,
-            notifier_->GetConnectionType());
-  EXPECT_EQ(std::numeric_limits<double>::infinity(),
-            notifier_->GetMaxBandwidth());
+  double max_bandwidth_mbps = 0.0;
+  NetworkChangeNotifier::ConnectionType connection_type =
+      NetworkChangeNotifier::CONNECTION_NONE;
+  notifier_->GetMaxBandwidthAndConnectionType(&max_bandwidth_mbps,
+                                              &connection_type);
+  EXPECT_EQ(NetworkChangeNotifier::CONNECTION_UNKNOWN, connection_type);
+  EXPECT_EQ(std::numeric_limits<double>::infinity(), max_bandwidth_mbps);
   SetOffline();
-  EXPECT_EQ(NetworkChangeNotifier::CONNECTION_NONE,
-            notifier_->GetConnectionType());
-  EXPECT_EQ(0.0, notifier_->GetMaxBandwidth());
+  notifier_->GetMaxBandwidthAndConnectionType(&max_bandwidth_mbps,
+                                              &connection_type);
+  EXPECT_EQ(NetworkChangeNotifier::CONNECTION_NONE, connection_type);
+  EXPECT_EQ(0.0, max_bandwidth_mbps);
 }
 
 TEST_F(NetworkChangeNotifierDelegateAndroidTest,

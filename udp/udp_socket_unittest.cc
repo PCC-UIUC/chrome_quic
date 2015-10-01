@@ -9,19 +9,20 @@
 
 #include "base/basictypes.h"
 #include "base/bind.h"
+#include "base/location.h"
 #include "base/memory/weak_ptr.h"
-#include "base/message_loop/message_loop.h"
-#include "base/metrics/histogram.h"
 #include "base/run_loop.h"
+#include "base/single_thread_task_runner.h"
 #include "base/stl_util.h"
+#include "base/thread_task_runner_handle.h"
 #include "net/base/io_buffer.h"
 #include "net/base/ip_endpoint.h"
 #include "net/base/net_errors.h"
 #include "net/base/net_util.h"
 #include "net/base/test_completion_callback.h"
-#include "net/log/captured_net_log_entry.h"
-#include "net/log/net_log_unittest.h"
 #include "net/log/test_net_log.h"
+#include "net/log/test_net_log_entry.h"
+#include "net/log/test_net_log_util.h"
 #include "net/test/net_test_suite.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "testing/platform_test.h"
@@ -52,7 +53,7 @@ class UDPSocketTest : public PlatformTest {
   // If |address| is specified, then it is used for the destination
   // to send to. Otherwise, will send to the last socket this server
   // received from.
-  int SendToSocket(UDPServerSocket* socket, std::string msg) {
+  int SendToSocket(UDPServerSocket* socket, const std::string& msg) {
     return SendToSocket(socket, msg, recv_from_address_);
   }
 
@@ -93,7 +94,7 @@ class UDPSocketTest : public PlatformTest {
 
   // Loop until |msg| has been written to the socket or until an
   // error occurs.
-  int WriteSocket(UDPClientSocket* socket, std::string msg) {
+  int WriteSocket(UDPClientSocket* socket, const std::string& msg) {
     TestCompletionCallback callback;
 
     int length = msg.length();
@@ -115,12 +116,15 @@ class UDPSocketTest : public PlatformTest {
     return bytes_sent;
   }
 
-  void WriteSocketIgnoreResult(UDPClientSocket* socket, std::string msg) {
+  void WriteSocketIgnoreResult(UDPClientSocket* socket,
+                               const std::string& msg) {
     WriteSocket(socket, msg);
   }
 
   // Creates an address from ip address and port and writes it to |*address|.
-  void CreateUDPAddress(std::string ip_str, uint16 port, IPEndPoint* address) {
+  void CreateUDPAddress(const std::string& ip_str,
+                        uint16 port,
+                        IPEndPoint* address) {
     IPAddressNumber ip_number;
     bool rv = ParseIPLiteralToNumber(ip_str, &ip_number);
     if (!rv)
@@ -202,7 +206,7 @@ void UDPSocketTest::ConnectTest(bool use_nonblocking_io) {
   EXPECT_EQ(ERR_IO_PENDING, rv);
 
   // Client sends to the server.
-  base::MessageLoop::current()->PostTask(
+  base::ThreadTaskRunnerHandle::Get()->PostTask(
       FROM_HERE,
       base::Bind(&UDPSocketTest::WriteSocketIgnoreResult,
                  base::Unretained(this), client.get(), simple_message));
@@ -215,7 +219,7 @@ void UDPSocketTest::ConnectTest(bool use_nonblocking_io) {
   client.reset();
 
   // Check the server's log.
-  CapturedNetLogEntry::List server_entries;
+  TestNetLogEntry::List server_entries;
   server_log.GetEntries(&server_entries);
   EXPECT_EQ(5u, server_entries.size());
   EXPECT_TRUE(
@@ -230,7 +234,7 @@ void UDPSocketTest::ConnectTest(bool use_nonblocking_io) {
       LogContainsEndEvent(server_entries, 4, NetLog::TYPE_SOCKET_ALIVE));
 
   // Check the client's log.
-  CapturedNetLogEntry::List client_entries;
+  TestNetLogEntry::List client_entries;
   client_log.GetEntries(&client_entries);
   EXPECT_EQ(7u, client_entries.size());
   EXPECT_TRUE(
@@ -264,9 +268,9 @@ TEST_F(UDPSocketTest, ConnectNonBlocking) {
 // root permissions on OSX 10.7+.
 TEST_F(UDPSocketTest, DISABLED_Broadcast) {
 #elif defined(OS_ANDROID)
-// It is also disabled for Android because it is extremely flaky.
-// The first call to SendToSocket returns -109 (Address not reachable)
-// in some unpredictable cases. crbug.com/139144.
+// Disabled for Android because devices attached to testbots don't have default
+// network, so broadcasting to 255.255.255.255 returns error -109 (Address not
+// reachable). crbug.com/139144.
 TEST_F(UDPSocketTest, DISABLED_Broadcast) {
 #else
 TEST_F(UDPSocketTest, Broadcast) {
@@ -343,15 +347,10 @@ class TestPrng {
   DISALLOW_COPY_AND_ASSIGN(TestPrng);
 };
 
-#if defined(OS_ANDROID)
-// Disabled on Android for lack of 192.168.1.13. crbug.com/161245
-TEST_F(UDPSocketTest, DISABLED_ConnectRandomBind) {
-#else
 TEST_F(UDPSocketTest, ConnectRandomBind) {
-#endif
   std::vector<UDPClientSocket*> sockets;
   IPEndPoint peer_address;
-  CreateUDPAddress("192.168.1.13", 53, &peer_address);
+  CreateUDPAddress("127.0.0.1", 53, &peer_address);
 
   // Create and connect sockets and save port numbers.
   std::deque<int> used_ports;
@@ -492,8 +491,9 @@ TEST_F(UDPSocketTest, ClientGetLocalPeerAddresses) {
   } tests[] = {
     { "127.0.00.1", "127.0.0.1", false },
     { "::1", "::1", true },
-#if !defined(OS_ANDROID)
+#if !defined(OS_ANDROID) && !defined(OS_IOS)
     // Addresses below are disabled on Android. See crbug.com/161248
+    // They are also disabled on iOS. See https://crbug.com/523225
     { "192.168.1.1", "127.0.0.1", false },
     { "2001:db8:0::42", "::1", true },
 #endif

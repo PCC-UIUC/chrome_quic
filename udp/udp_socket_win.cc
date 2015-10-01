@@ -11,7 +11,7 @@
 #include "base/lazy_instance.h"
 #include "base/logging.h"
 #include "base/message_loop/message_loop.h"
-#include "base/metrics/histogram.h"
+#include "base/metrics/histogram_macros.h"
 #include "base/metrics/sparse_histogram.h"
 #include "base/rand_util.h"
 #include "net/base/io_buffer.h"
@@ -133,14 +133,14 @@ void UDPSocketWin::Core::WatchForRead() {
   // We grab an extra reference because there is an IO operation in progress.
   // Balanced in ReadDelegate::OnObjectSignaled().
   AddRef();
-  read_watcher_.StartWatching(read_overlapped_.hEvent, &reader_);
+  read_watcher_.StartWatchingOnce(read_overlapped_.hEvent, &reader_);
 }
 
 void UDPSocketWin::Core::WatchForWrite() {
   // We grab an extra reference because there is an IO operation in progress.
   // Balanced in WriteDelegate::OnObjectSignaled().
   AddRef();
-  write_watcher_.StartWatching(write_overlapped_.hEvent, &writer_);
+  write_watcher_.StartWatchingOnce(write_overlapped_.hEvent, &writer_);
 }
 
 void UDPSocketWin::Core::ReadDelegate::OnObjectSignaled(HANDLE object) {
@@ -669,7 +669,7 @@ void UDPSocketWin::WatchForReadWrite() {
   if (read_write_watcher_.IsWatching())
     return;
   bool watched =
-      read_write_watcher_.StartWatching(read_write_event_.Get(), this);
+      read_write_watcher_.StartWatchingOnce(read_write_event_.Get(), this);
   DCHECK(watched);
 }
 
@@ -681,7 +681,7 @@ void UDPSocketWin::LogRead(int result,
     return;
   }
 
-  if (net_log_.GetCaptureMode().enabled()) {
+  if (net_log_.IsCapturing()) {
     net_log_.AddEvent(
         NetLog::TYPE_UDP_BYTES_RECEIVED,
         CreateNetLogUDPDataTranferCallback(result, bytes, address));
@@ -698,7 +698,7 @@ void UDPSocketWin::LogWrite(int result,
     return;
   }
 
-  if (net_log_.GetCaptureMode().enabled()) {
+  if (net_log_.IsCapturing()) {
     net_log_.AddEvent(
         NetLog::TYPE_UDP_BYTES_SENT,
         CreateNetLogUDPDataTranferCallback(result, bytes, address));

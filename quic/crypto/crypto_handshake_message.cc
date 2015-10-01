@@ -55,7 +55,7 @@ const QuicData& CryptoHandshakeMessage::GetSerialized() const {
   if (!serialized_.get()) {
     serialized_.reset(CryptoFramer::ConstructHandshakeMessage(*this));
   }
-  return *serialized_.get();
+  return *serialized_;
 }
 
 void CryptoHandshakeMessage::MarkDirty() {
@@ -251,7 +251,6 @@ string CryptoHandshakeMessage::DebugStringInternal(size_t indent) const {
         break;
       case kKEXS:
       case kAEAD:
-      case kCGST:
       case kCOPT:
       case kPDMD:
       case kVER:

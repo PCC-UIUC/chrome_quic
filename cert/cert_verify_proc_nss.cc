@@ -15,6 +15,7 @@
 #include <sslerr.h>
 
 #include "base/logging.h"
+#include "build/build_config.h"
 #include "crypto/nss_util.h"
 #include "crypto/scoped_nss_types.h"
 #include "crypto/sha2.h"
@@ -32,6 +33,12 @@
 #include <CommonCrypto/CommonDigest.h>
 #include "net/cert/x509_util_ios.h"
 #endif  // defined(OS_IOS)
+
+#if defined(USE_NSS_CERTS)
+#include <dlfcn.h>
+#else
+#include <ocsp.h>
+#endif
 
 namespace net {
 
@@ -756,7 +763,17 @@ CERTCertList* CertificateListToCERTCertList(const CertificateList& list) {
 
 }  // namespace
 
-CertVerifyProcNSS::CertVerifyProcNSS() {}
+CertVerifyProcNSS::CertVerifyProcNSS()
+#if defined(USE_NSS_CERTS)
+    : cache_ocsp_response_from_side_channel_(
+          reinterpret_cast<CacheOCSPResponseFromSideChannelFunction>(
+              dlsym(RTLD_DEFAULT, "CERT_CacheOCSPResponseFromSideChannel")))
+#else
+    : cache_ocsp_response_from_side_channel_(
+          &CERT_CacheOCSPResponseFromSideChannel)
+#endif
+{
+}
 
 CertVerifyProcNSS::~CertVerifyProcNSS() {}
 
@@ -764,9 +781,14 @@ bool CertVerifyProcNSS::SupportsAdditionalTrustAnchors() const {
   return true;
 }
 
+bool CertVerifyProcNSS::SupportsOCSPStapling() const {
+  return cache_ocsp_response_from_side_channel_;
+}
+
 int CertVerifyProcNSS::VerifyInternalImpl(
     X509Certificate* cert,
     const std::string& hostname,
+    const std::string& ocsp_response,
     int flags,
     CRLSet* crl_set,
     const CertificateList& additional_trust_anchors,
@@ -780,6 +802,20 @@ int CertVerifyProcNSS::VerifyInternalImpl(
 #else
   CERTCertificate* cert_handle = cert->os_cert_handle();
 #endif  // defined(OS_IOS)
+
+  if (!ocsp_response.empty() && cache_ocsp_response_from_side_channel_) {
+    // Note: NSS uses a thread-safe global hash table, so this call will
+    // affect any concurrent verification operations on |cert| or copies of
+    // the same certificate. This is an unavoidable limitation of NSS's OCSP
+    // API.
+    SECItem ocsp_response_item;
+    ocsp_response_item.data = reinterpret_cast<unsigned char*>(
+        const_cast<char*>(ocsp_response.data()));
+    ocsp_response_item.len = ocsp_response.size();
+    cache_ocsp_response_from_side_channel_(CERT_GetDefaultCertDB(), cert_handle,
+                                           PR_Now(), &ocsp_response_item,
+                                           nullptr);
+  }
 
   if (!cert->VerifyNameMatch(hostname,
                              &verify_result->common_name_fallback_used)) {
@@ -928,14 +964,12 @@ int CertVerifyProcNSS::VerifyInternalImpl(
 int CertVerifyProcNSS::VerifyInternal(
     X509Certificate* cert,
     const std::string& hostname,
+    const std::string& ocsp_response,
     int flags,
     CRLSet* crl_set,
     const CertificateList& additional_trust_anchors,
     CertVerifyResult* verify_result) {
-  return VerifyInternalImpl(cert,
-                            hostname,
-                            flags,
-                            crl_set,
+  return VerifyInternalImpl(cert, hostname, ocsp_response, flags, crl_set,
                             additional_trust_anchors,
                             NULL,  // chain_verify_callback
                             verify_result);

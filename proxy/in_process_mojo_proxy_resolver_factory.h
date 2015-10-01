@@ -8,8 +8,10 @@
 #include "base/macros.h"
 #include "net/proxy/mojo_proxy_resolver_factory.h"
 
+namespace base {
 template <typename T>
 struct DefaultSingletonTraits;
+}
 
 namespace net {
 
@@ -21,13 +23,15 @@ class InProcessMojoProxyResolverFactory : public MojoProxyResolverFactory {
   static InProcessMojoProxyResolverFactory* GetInstance();
 
   // Overridden from MojoProxyResolverFactory:
-  void Create(mojo::InterfaceRequest<interfaces::ProxyResolver> req,
-              interfaces::HostResolverPtr host_resolver) override;
+  scoped_ptr<base::ScopedClosureRunner> CreateResolver(
+      const mojo::String& pac_script,
+      mojo::InterfaceRequest<interfaces::ProxyResolver> req,
+      interfaces::ProxyResolverFactoryRequestClientPtr client) override;
 
  private:
   InProcessMojoProxyResolverFactory();
   ~InProcessMojoProxyResolverFactory() override;
-  friend struct DefaultSingletonTraits<InProcessMojoProxyResolverFactory>;
+  friend struct base::DefaultSingletonTraits<InProcessMojoProxyResolverFactory>;
 
   interfaces::ProxyResolverFactoryPtr factory_;
 

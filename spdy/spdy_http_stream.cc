@@ -8,9 +8,12 @@
 #include <list>
 
 #include "base/bind.h"
+#include "base/location.h"
 #include "base/logging.h"
-#include "base/message_loop/message_loop.h"
+#include "base/single_thread_task_runner.h"
 #include "base/strings/stringprintf.h"
+#include "base/thread_task_runner_handle.h"
+#include "base/values.h"
 #include "net/base/host_port_pair.h"
 #include "net/base/net_util.h"
 #include "net/base/upload_data_stream.h"
@@ -33,6 +36,7 @@ SpdyHttpStream::SpdyHttpStream(const base::WeakPtr<SpdySession>& spdy_session,
       closed_stream_status_(ERR_FAILED),
       closed_stream_id_(0),
       closed_stream_received_bytes_(0),
+      closed_stream_sent_bytes_(0),
       request_info_(NULL),
       response_info_(NULL),
       response_headers_status_(RESPONSE_HEADERS_ARE_INCOMPLETE),
@@ -157,10 +161,6 @@ bool SpdyHttpStream::IsResponseBodyComplete() const {
   return stream_closed_;
 }
 
-bool SpdyHttpStream::CanFindEndOfResponse() const {
-  return true;
-}
-
 bool SpdyHttpStream::IsConnectionReused() const {
   return is_reused_;
 }
@@ -169,12 +169,12 @@ void SpdyHttpStream::SetConnectionReused() {
   // SPDY doesn't need an indicator here.
 }
 
-bool SpdyHttpStream::IsConnectionReusable() const {
+bool SpdyHttpStream::CanReuseConnection() const {
   // SPDY streams aren't considered reusable.
   return false;
 }
 
-int64 SpdyHttpStream::GetTotalReceivedBytes() const {
+int64_t SpdyHttpStream::GetTotalReceivedBytes() const {
   if (stream_closed_)
     return closed_stream_received_bytes_;
 
@@ -182,6 +182,16 @@ int64 SpdyHttpStream::GetTotalReceivedBytes() const {
     return 0;
 
   return stream_->raw_received_bytes();
+}
+
+int64_t SpdyHttpStream::GetTotalSentBytes() const {
+  if (stream_closed_)
+    return closed_stream_sent_bytes_;
+
+  if (!stream_)
+    return 0;
+
+  return stream_->raw_sent_bytes();
 }
 
 bool SpdyHttpStream::GetLoadTimingInfo(LoadTimingInfo* load_timing_info) const {
@@ -362,7 +372,14 @@ void SpdyHttpStream::OnDataSent() {
   ReadAndSendRequestBodyData();
 }
 
+// TODO(xunjieli): Maybe do something with the trailers. crbug.com/422958.
+void SpdyHttpStream::OnTrailers(const SpdyHeaderBlock& trailers) {}
+
 void SpdyHttpStream::OnClose(int status) {
+  // Cancel any pending reads from the upload data stream.
+  if (request_info_->upload_data_stream)
+    request_info_->upload_data_stream->Reset();
+
   if (stream_.get()) {
     stream_closed_ = true;
     closed_stream_status_ = status;
@@ -370,8 +387,10 @@ void SpdyHttpStream::OnClose(int status) {
     closed_stream_has_load_timing_info_ =
         stream_->GetLoadTimingInfo(&closed_stream_load_timing_info_);
     closed_stream_received_bytes_ = stream_->raw_received_bytes();
+    closed_stream_sent_bytes_ = stream_->raw_sent_bytes();
   }
   stream_.reset();
+
   bool invoked_callback = false;
   if (status == OK) {
     // We need to complete any pending buffered read now.
@@ -446,7 +465,7 @@ void SpdyHttpStream::ScheduleBufferedReadCallback() {
   more_read_data_pending_ = false;
   buffered_read_callback_pending_ = true;
   const base::TimeDelta kBufferTime = base::TimeDelta::FromMilliseconds(1);
-  base::MessageLoop::current()->PostDelayedTask(
+  base::ThreadTaskRunnerHandle::Get()->PostDelayedTask(
       FROM_HERE,
       base::Bind(base::IgnoreResult(&SpdyHttpStream::DoBufferedReadCallback),
                  weak_factory_.GetWeakPtr()),
@@ -517,15 +536,20 @@ void SpdyHttpStream::GetSSLInfo(SSLInfo* ssl_info) {
 
 void SpdyHttpStream::GetSSLCertRequestInfo(
     SSLCertRequestInfo* cert_request_info) {
-  DCHECK(stream_.get());
-  stream_->GetSSLCertRequestInfo(cert_request_info);
+  // A SPDY stream cannot request client certificates. Client authentication may
+  // only occur during the initial SSL handshake.
+  NOTREACHED();
 }
 
-bool SpdyHttpStream::IsSpdyHttpStream() const {
-  return true;
+bool SpdyHttpStream::GetRemoteEndpoint(IPEndPoint* endpoint) {
+  if (!spdy_session_)
+    return false;
+
+  return spdy_session_->GetPeerAddress(endpoint) == OK;
 }
 
 void SpdyHttpStream::Drain(HttpNetworkSession* session) {
+  NOTREACHED();
   Close(false);
   delete this;
 }

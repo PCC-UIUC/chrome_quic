@@ -78,7 +78,8 @@ class NetworkChangeNotifierAndroid::DnsConfigServiceThread
         address_tracker_(base::Bind(base::DoNothing),
                          base::Bind(base::DoNothing),
                          // We're only interested in tunnel interface changes.
-                         base::Bind(NotifyNetworkChangeNotifierObservers)) {}
+                         base::Bind(NotifyNetworkChangeNotifierObservers),
+                         base::hash_set<std::string>()) {}
 
   ~DnsConfigServiceThread() override {
     NetworkChangeNotifier::RemoveNetworkChangeObserver(this);
@@ -143,8 +144,11 @@ NetworkChangeNotifierAndroid::GetCurrentConnectionType() const {
   return delegate_->GetCurrentConnectionType();
 }
 
-double NetworkChangeNotifierAndroid::GetCurrentMaxBandwidth() const {
-  return delegate_->GetCurrentMaxBandwidth();
+void NetworkChangeNotifierAndroid::GetCurrentMaxBandwidthAndConnectionType(
+    double* max_bandwidth_mbps,
+    ConnectionType* connection_type) const {
+  delegate_->GetCurrentMaxBandwidthAndConnectionType(max_bandwidth_mbps,
+                                                     connection_type);
 }
 
 void NetworkChangeNotifierAndroid::OnConnectionTypeChanged() {
@@ -152,9 +156,10 @@ void NetworkChangeNotifierAndroid::OnConnectionTypeChanged() {
 }
 
 void NetworkChangeNotifierAndroid::OnMaxBandwidthChanged(
-    double max_bandwidth_mbps) {
-  NetworkChangeNotifier::NotifyObserversOfMaxBandwidthChange(
-      max_bandwidth_mbps);
+    double max_bandwidth_mbps,
+    ConnectionType type) {
+  NetworkChangeNotifier::NotifyObserversOfMaxBandwidthChange(max_bandwidth_mbps,
+                                                             type);
 }
 
 // static
@@ -172,6 +177,9 @@ NetworkChangeNotifierAndroid::NetworkChangeNotifierAndroid(
   delegate_->AddObserver(this);
   dns_config_service_thread_->StartWithOptions(
       base::Thread::Options(base::MessageLoop::TYPE_IO, 0));
+  // Wait until Init is called on the DNS config thread before
+  // calling InitAfterStart.
+  dns_config_service_thread_->WaitUntilThreadStarted();
   dns_config_service_thread_->InitAfterStart();
 }
 

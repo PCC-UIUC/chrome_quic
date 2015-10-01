@@ -6,10 +6,12 @@
 #include "base/files/file_util.h"
 #include "base/files/scoped_temp_dir.h"
 #include "base/hash.h"
+#include "base/location.h"
 #include "base/logging.h"
 #include "base/memory/scoped_ptr.h"
 #include "base/pickle.h"
 #include "base/run_loop.h"
+#include "base/single_thread_task_runner.h"
 #include "base/strings/stringprintf.h"
 #include "base/thread_task_runner_handle.h"
 #include "base/threading/thread.h"
@@ -50,9 +52,9 @@ TEST(IndexMetadataTest, Basics) {
 
 TEST(IndexMetadataTest, Serialize) {
   SimpleIndexFile::IndexMetadata index_metadata(123, 456);
-  Pickle pickle;
+  base::Pickle pickle;
   index_metadata.Serialize(&pickle);
-  PickleIterator it(pickle);
+  base::PickleIterator it(pickle);
   SimpleIndexFile::IndexMetadata new_index_metadata;
   new_index_metadata.Deserialize(&it);
 
@@ -114,8 +116,8 @@ TEST_F(SimpleIndexFileTest, Serialize) {
     SimpleIndex::InsertInEntrySet(hash, metadata_entries[i], &entries);
   }
 
-  scoped_ptr<Pickle> pickle = WrappedSimpleIndexFile::Serialize(
-      index_metadata, entries);
+  scoped_ptr<base::Pickle> pickle =
+      WrappedSimpleIndexFile::Serialize(index_metadata, entries);
   EXPECT_TRUE(pickle.get() != NULL);
   base::Time now = base::Time::Now();
   EXPECT_TRUE(WrappedSimpleIndexFile::SerializeFinalData(now, pickle.get()));
@@ -219,9 +221,8 @@ TEST_F(SimpleIndexFileTest, LoadCorruptIndex) {
   ASSERT_TRUE(simple_index_file.CreateIndexFileDirectory());
   const base::FilePath& index_path = simple_index_file.GetIndexFilePath();
   const std::string kDummyData = "nothing to be seen here";
-  EXPECT_EQ(
-      implicit_cast<int>(kDummyData.size()),
-      base::WriteFile(index_path, kDummyData.data(), kDummyData.size()));
+  EXPECT_EQ(static_cast<int>(kDummyData.size()),
+            base::WriteFile(index_path, kDummyData.data(), kDummyData.size()));
   base::Time fake_cache_mtime;
   ASSERT_TRUE(simple_util::GetMTime(simple_index_file.GetIndexFilePath(),
                                     &fake_cache_mtime));
@@ -261,9 +262,8 @@ TEST_F(SimpleIndexFileTest, SimpleCacheUpgrade) {
   const std::string index_file_contents("incorrectly serialized data");
   const base::FilePath old_index_file =
       cache_path.AppendASCII("the-real-index");
-  ASSERT_EQ(implicit_cast<int>(index_file_contents.size()),
-            base::WriteFile(old_index_file,
-                            index_file_contents.data(),
+  ASSERT_EQ(static_cast<int>(index_file_contents.size()),
+            base::WriteFile(old_index_file, index_file_contents.data(),
                             index_file_contents.size()));
 
   // Upgrade the cache.
@@ -274,11 +274,8 @@ TEST_F(SimpleIndexFileTest, SimpleCacheUpgrade) {
   ASSERT_TRUE(cache_thread.StartWithOptions(
       base::Thread::Options(base::MessageLoop::TYPE_IO, 0)));
   disk_cache::SimpleBackendImpl* simple_cache =
-      new disk_cache::SimpleBackendImpl(cache_path,
-                                        0,
-                                        net::DISK_CACHE,
-                                        cache_thread.message_loop_proxy().get(),
-                                        NULL);
+      new disk_cache::SimpleBackendImpl(cache_path, 0, net::DISK_CACHE,
+                                        cache_thread.task_runner().get(), NULL);
   net::TestCompletionCallback cb;
   int rv = simple_cache->Init(cb.callback());
   EXPECT_EQ(net::OK, cb.GetResult(rv));
@@ -291,7 +288,7 @@ TEST_F(SimpleIndexFileTest, SimpleCacheUpgrade) {
   // thread after that.
   MessageLoopHelper helper;
   CallbackTest cb_shutdown(&helper, false);
-  cache_thread.message_loop_proxy()->PostTask(
+  cache_thread.task_runner()->PostTask(
       FROM_HERE,
       base::Bind(&CallbackTest::Run, base::Unretained(&cb_shutdown), net::OK));
   helper.WaitUntilCacheIoFinished(1);

@@ -122,7 +122,7 @@ class PrintingLogObserver : public net::NetLog::ThreadSafeObserver {
     scoped_ptr<base::Value> params(entry.ParametersToValue());
     std::string params_str;
     if (params.get()) {
-      base::JSONWriter::Write(params.get(), &params_str);
+      base::JSONWriter::Write(*params, &params_str);
       params_str.insert(0, ": ");
     }
 
@@ -144,7 +144,7 @@ BuildURLRequestContext(net::NetLog* net_log) {
   //
   // TODO(akalin): Remove this once http://crbug.com/146421 is fixed.
   builder.set_proxy_config_service(
-      new net::ProxyConfigServiceFixed(net::ProxyConfig()));
+      make_scoped_ptr(new net::ProxyConfigServiceFixed(net::ProxyConfig())));
 #endif
   scoped_ptr<net::URLRequestContext> context(builder.Build());
   context->set_net_log(net_log);
@@ -230,8 +230,8 @@ int main(int argc, char* argv[]) {
                                 net::NetLogCaptureMode::IncludeSocketBytes());
 
   QuitDelegate delegate;
-  scoped_ptr<net::URLFetcher> fetcher(
-      net::URLFetcher::Create(url, net::URLFetcher::HEAD, &delegate));
+  scoped_ptr<net::URLFetcher> fetcher =
+      net::URLFetcher::Create(url, net::URLFetcher::HEAD, &delegate);
   scoped_ptr<net::URLRequestContext> url_request_context(
       BuildURLRequestContext(&net_log));
   fetcher->SetRequestContext(
@@ -240,7 +240,7 @@ int main(int argc, char* argv[]) {
       // The URLFetcher will take a reference on the object, and hence
       // implicitly take ownership.
       new net::TrivialURLRequestContextGetter(url_request_context.get(),
-                                              main_loop.message_loop_proxy()));
+                                              main_loop.task_runner()));
   const base::Time start_time = base::Time::Now();
   const base::TimeTicks start_ticks = base::TimeTicks::Now();
 

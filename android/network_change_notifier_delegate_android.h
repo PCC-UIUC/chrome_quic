@@ -6,7 +6,7 @@
 #define NET_ANDROID_NETWORK_CHANGE_NOTIFIER_DELEGATE_ANDROID_H_
 
 #include "base/android/jni_android.h"
-#include "base/basictypes.h"
+#include "base/macros.h"
 #include "base/memory/ref_counted.h"
 #include "base/observer_list_threadsafe.h"
 #include "base/synchronization/lock.h"
@@ -35,7 +35,8 @@ class NET_EXPORT_PRIVATE NetworkChangeNotifierDelegateAndroid {
     virtual void OnConnectionTypeChanged() = 0;
 
     // Updates the current max bandwidth.
-    virtual void OnMaxBandwidthChanged(double max_bandwidth_mbps) = 0;
+    virtual void OnMaxBandwidthChanged(double max_bandwidth_mbps,
+                                       ConnectionType connection_type) = 0;
   };
 
   NetworkChangeNotifierDelegateAndroid();
@@ -67,7 +68,9 @@ class NET_EXPORT_PRIVATE NetworkChangeNotifierDelegateAndroid {
   ConnectionType GetCurrentConnectionType() const;
 
   // Can be called from any thread.
-  double GetCurrentMaxBandwidth() const;
+  void GetCurrentMaxBandwidthAndConnectionType(
+      double* max_bandwidth_mbps,
+      ConnectionType* connection_type) const;
 
   // Initializes JNI bindings.
   static bool Register(JNIEnv* env);
@@ -83,7 +86,7 @@ class NET_EXPORT_PRIVATE NetworkChangeNotifierDelegateAndroid {
   void SetOffline();
 
   base::ThreadChecker thread_checker_;
-  scoped_refptr<ObserverListThreadSafe<Observer> > observers_;
+  scoped_refptr<base::ObserverListThreadSafe<Observer>> observers_;
   scoped_refptr<base::SingleThreadTaskRunner> jni_task_runner_;
   base::android::ScopedJavaGlobalRef<jobject> java_network_change_notifier_;
   mutable base::Lock connection_lock_;  // Protects the state below.

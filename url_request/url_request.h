@@ -5,6 +5,8 @@
 #ifndef NET_URL_REQUEST_URL_REQUEST_H_
 #define NET_URL_REQUEST_URL_REQUEST_H_
 
+#include <stdint.h>
+
 #include <string>
 #include <vector>
 
@@ -28,6 +30,7 @@
 #include "net/http/http_request_headers.h"
 #include "net/http/http_response_info.h"
 #include "net/log/net_log.h"
+#include "net/socket/connection_attempts.h"
 #include "net/url_request/url_request_status.h"
 #include "url/gurl.h"
 
@@ -355,8 +358,16 @@ class NET_EXPORT URLRequest : NON_EXPORTED_BASE(public base::NonThreadSafe),
   bool GetFullRequestHeaders(HttpRequestHeaders* headers) const;
 
   // Gets the total amount of data received from network after SSL decoding and
-  // proxy handling.
-  int64 GetTotalReceivedBytes() const;
+  // proxy handling. Pertains only to the last URLRequestJob issued by this
+  // URLRequest, i.e. reset on redirects, but not reset when multiple roundtrips
+  // are used for range requests or auth.
+  int64_t GetTotalReceivedBytes() const;
+
+  // Gets the total amount of data sent over the network before SSL encoding and
+  // proxy handling. Pertains only to the last URLRequestJob issued by this
+  // URLRequest, i.e. reset on redirects, but not reset when multiple roundtrips
+  // are used for range requests or auth.
+  int64_t GetTotalSentBytes() const;
 
   // Returns the current load state for the request. The returned value's
   // |param| field is an optional parameter describing details related to the
@@ -364,8 +375,8 @@ class NET_EXPORT URLRequest : NON_EXPORTED_BASE(public base::NonThreadSafe),
   LoadStateWithParam GetLoadState() const;
 
   // Returns a partial representation of the request's state as a value, for
-  // debugging.  Caller takes ownership of returned value.
-  base::Value* GetStateAsValue() const;
+  // debugging.
+  scoped_ptr<base::Value> GetStateAsValue() const;
 
   // Logs information about the what external object currently blocking the
   // request.  LogUnblocked must be called before resuming the request.  This
@@ -443,6 +454,18 @@ class NET_EXPORT URLRequest : NON_EXPORTED_BASE(public base::NonThreadSafe),
   // LoadTimingInfo only contains ConnectTiming information and socket IDs for
   // non-cached HTTP responses.
   void GetLoadTimingInfo(LoadTimingInfo* load_timing_info) const;
+
+  // Gets the remote endpoint of the most recent socket that the network stack
+  // used to make this request.
+  //
+  // Note that GetSocketAddress returns the |socket_address| field from
+  // HttpResponseInfo, which is only populated once the response headers are
+  // received, and can return cached values for cache revalidation requests.
+  // GetRemoteEndpoint will only return addresses from the current request.
+  //
+  // Returns true and fills in |endpoint| if the endpoint is available; returns
+  // false and leaves |endpoint| unchanged if it is unavailable.
+  bool GetRemoteEndpoint(IPEndPoint* endpoint) const;
 
   // Returns the cookie values included in the response, if the request is one
   // that can have cookies.  Returns true if the request is a cookie-bearing
@@ -598,6 +621,10 @@ class NET_EXPORT URLRequest : NON_EXPORTED_BASE(public base::NonThreadSafe),
   void set_received_response_content_length(int64 received_content_length) {
     received_response_content_length_ = received_content_length;
   }
+
+  // The number of bytes in the raw response body (before any decompression,
+  // etc.). This is only available after the final Read completes. Not available
+  // for FTP responses.
   int64 received_response_content_length() const {
     return received_response_content_length_;
   }
@@ -607,6 +634,11 @@ class NET_EXPORT URLRequest : NON_EXPORTED_BASE(public base::NonThreadSafe),
   const HostPortPair& proxy_server() const {
     return proxy_server_;
   }
+
+  // Gets the connection attempts made in the process of servicing this
+  // URLRequest. Only guaranteed to be valid if called after the request fails
+  // or after the response headers are received.
+  void GetConnectionAttempts(ConnectionAttempts* out) const;
 
  protected:
   // Allow the URLRequestJob class to control the is_pending() flag.
@@ -810,13 +842,13 @@ class NET_EXPORT URLRequest : NON_EXPORTED_BASE(public base::NonThreadSafe),
   // populated during Start(), and the rest are populated in OnResponseReceived.
   LoadTimingInfo load_timing_info_;
 
-  scoped_ptr<const base::debug::StackTrace> stack_trace_;
-
   // Keeps track of whether or not OnBeforeNetworkStart has been called yet.
   bool notified_before_network_start_;
 
   // The proxy server used for this request, if any.
   HostPortPair proxy_server_;
+
+  scoped_ptr<const base::debug::StackTrace> stack_trace_;
 
   DISALLOW_COPY_AND_ASSIGN(URLRequest);
 };

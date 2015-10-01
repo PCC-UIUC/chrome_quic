@@ -5,10 +5,12 @@
 #include "net/proxy/proxy_script_fetcher_impl.h"
 
 #include "base/compiler_specific.h"
+#include "base/location.h"
 #include "base/logging.h"
-#include "base/message_loop/message_loop.h"
-#include "base/profiler/scoped_tracker.h"
+#include "base/metrics/histogram.h"
+#include "base/single_thread_task_runner.h"
 #include "base/strings/string_util.h"
+#include "base/thread_task_runner_handle.h"
 #include "net/base/data_url.h"
 #include "net/base/io_buffer.h"
 #include "net/base/load_flags.h"
@@ -41,7 +43,7 @@ bool IsPacMimeType(const std::string& mime_type) {
     "application/x-javascript-config",
   };
   for (size_t i = 0; i < arraysize(kSupportedPacMimeTypes); ++i) {
-    if (LowerCaseEqualsASCII(mime_type, kSupportedPacMimeTypes[i]))
+    if (base::LowerCaseEqualsASCII(mime_type, kSupportedPacMimeTypes[i]))
       return true;
   }
   return false;
@@ -115,11 +117,6 @@ void ProxyScriptFetcherImpl::OnResponseCompleted(URLRequest* request) {
 
 int ProxyScriptFetcherImpl::Fetch(
     const GURL& url, base::string16* text, const CompletionCallback& callback) {
-  // TODO(eroman): Remove ScopedTracker below once crbug.com/455942 is fixed.
-  tracked_objects::ScopedTracker tracking_profile1(
-      FROM_HERE_WITH_EXPLICIT_FUNCTION(
-          "455942 ProxyScriptFetcherImpl::Fetch (Other)"));
-
   // It is invalid to call Fetch() while a request is already in progress.
   DCHECK(!cur_request_.get());
   DCHECK(!callback.is_null());
@@ -127,10 +124,6 @@ int ProxyScriptFetcherImpl::Fetch(
 
   // Handle base-64 encoded data-urls that contain custom PAC scripts.
   if (url.SchemeIs("data")) {
-    // TODO(eroman): Remove ScopedTracker below once crbug.com/455942 is fixed.
-    tracked_objects::ScopedTracker tracking_profile2(
-        FROM_HERE_WITH_EXPLICIT_FUNCTION(
-            "455942 ProxyScriptFetcherImpl::Fetch (data url)"));
     std::string mime_type;
     std::string charset;
     std::string data;
@@ -140,6 +133,9 @@ int ProxyScriptFetcherImpl::Fetch(
     ConvertResponseToUTF16(charset, data, text);
     return OK;
   }
+
+  DCHECK(fetch_start_time_.is_null());
+  fetch_start_time_ = base::TimeTicks::Now();
 
   cur_request_ =
       url_request_context_->CreateRequest(url, DEFAULT_PRIORITY, this);
@@ -166,16 +162,9 @@ int ProxyScriptFetcherImpl::Fetch(
   // Post a task to timeout this request if it takes too long.
   cur_request_id_ = ++next_id_;
 
-  // TODO(eroman): Remove ScopedTracker below once crbug.com/455942 is fixed.
-  tracked_objects::ScopedTracker tracking_profile3(
-      FROM_HERE_WITH_EXPLICIT_FUNCTION(
-          "455942 ProxyScriptFetcherImpl::Fetch (PostDelayedTask)"));
-
-  base::MessageLoop::current()->PostDelayedTask(
-      FROM_HERE,
-      base::Bind(&ProxyScriptFetcherImpl::OnTimeout,
-                 weak_factory_.GetWeakPtr(),
-                 cur_request_id_),
+  base::ThreadTaskRunnerHandle::Get()->PostDelayedTask(
+      FROM_HERE, base::Bind(&ProxyScriptFetcherImpl::OnTimeout,
+                            weak_factory_.GetWeakPtr(), cur_request_id_),
       max_duration_);
 
   // Start the request.
@@ -291,12 +280,25 @@ bool ProxyScriptFetcherImpl::ConsumeBytesRead(URLRequest* request,
     return false;
   }
 
+  if (bytes_read_so_far_.empty()) {
+    DCHECK(fetch_time_to_first_byte_.is_null());
+    fetch_time_to_first_byte_ = base::TimeTicks::Now();
+  }
+
   bytes_read_so_far_.append(buf_->data(), num_bytes);
   return true;
 }
 
 void ProxyScriptFetcherImpl::FetchCompleted() {
   if (result_code_ == OK) {
+    // Calculate duration of time for proxy script fetch to complete.
+    DCHECK(!fetch_start_time_.is_null());
+    DCHECK(!fetch_time_to_first_byte_.is_null());
+    UMA_HISTOGRAM_MEDIUM_TIMES("Net.ProxyScriptFetcher.SuccessDuration",
+                               base::TimeTicks::Now() - fetch_start_time_);
+    UMA_HISTOGRAM_MEDIUM_TIMES("Net.ProxyScriptFetcher.FirstByteDuration",
+                               fetch_time_to_first_byte_ - fetch_start_time_);
+
     // The caller expects the response to be encoded as UTF16.
     std::string charset;
     cur_request_->GetCharset(&charset);
@@ -320,6 +322,8 @@ void ProxyScriptFetcherImpl::ResetCurRequestState() {
   callback_.Reset();
   result_code_ = OK;
   result_text_ = NULL;
+  fetch_start_time_ = base::TimeTicks();
+  fetch_time_to_first_byte_ = base::TimeTicks();
 }
 
 void ProxyScriptFetcherImpl::OnTimeout(int id) {

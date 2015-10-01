@@ -2,11 +2,13 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include <stdint.h>
+
 #include "base/basictypes.h"
 #include "base/files/file_util.h"
 #include "base/metrics/field_trial.h"
-#include "base/port.h"
 #include "base/run_loop.h"
+#include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
 #include "base/test/mock_entropy_provider.h"
@@ -52,7 +54,7 @@ scoped_ptr<disk_cache::BackendImpl> CreateExistingEntryCache(
   net::TestCompletionCallback cb;
 
   scoped_ptr<disk_cache::BackendImpl> cache(new disk_cache::BackendImpl(
-      cache_path, cache_thread.message_loop_proxy(), NULL));
+      cache_path, cache_thread.task_runner(), NULL));
   int rv = cache->Init(cb.callback());
   if (cb.GetResult(rv) != net::OK)
     return scoped_ptr<disk_cache::BackendImpl>();
@@ -250,7 +252,7 @@ bool DiskCacheBackendTest::CreateSetOfRandomEntries(
     key_pool->insert(key);
     entry->Close();
   }
-  return key_pool->size() == implicit_cast<size_t>(cache_->GetEntryCount());
+  return key_pool->size() == static_cast<size_t>(cache_->GetEntryCount());
 }
 
 // Performs iteration over the backend and checks that the keys of entries
@@ -272,7 +274,7 @@ bool DiskCacheBackendTest::EnumerateAndMatchKeys(
     EXPECT_EQ(1U, keys_to_match->erase(entry->GetKey()));
     entry->Close();
     ++(*count);
-    if (max_to_open >= 0 && implicit_cast<int>(*count) >= max_to_open)
+    if (max_to_open >= 0 && static_cast<int>(*count) >= max_to_open)
       break;
   };
 
@@ -1898,16 +1900,16 @@ TEST_F(DiskCacheTest, SimpleCacheControlRestart) {
 
   const int kRestartCount = 5;
   for (int i = 0; i < kRestartCount; ++i) {
-    cache.reset(new disk_cache::BackendImpl(
-        cache_path_, cache_thread.message_loop_proxy(), NULL));
+    cache.reset(new disk_cache::BackendImpl(cache_path_,
+                                            cache_thread.task_runner(), NULL));
     int rv = cache->Init(cb.callback());
     ASSERT_EQ(net::OK, cb.GetResult(rv));
     EXPECT_EQ(1, cache->GetEntryCount());
 
     disk_cache::Entry* entry = NULL;
     rv = cache->OpenEntry(kExistingEntryKey, &entry, cb.callback());
-    EXPECT_EQ(net::OK, cb.GetResult(rv));
-    EXPECT_TRUE(entry);
+    ASSERT_EQ(net::OK, cb.GetResult(rv));
+    EXPECT_NE(nullptr, entry);
     entry->Close();
   }
 }
@@ -1940,15 +1942,15 @@ TEST_F(DiskCacheTest, SimpleCacheControlLeave) {
   const int kRestartCount = 5;
   for (int i = 0; i < kRestartCount; ++i) {
     scoped_ptr<disk_cache::BackendImpl> cache(new disk_cache::BackendImpl(
-        cache_path_, cache_thread.message_loop_proxy(), NULL));
+        cache_path_, cache_thread.task_runner(), NULL));
     int rv = cache->Init(cb.callback());
     ASSERT_EQ(net::OK, cb.GetResult(rv));
     EXPECT_EQ(1, cache->GetEntryCount());
 
     disk_cache::Entry* entry = NULL;
     rv = cache->OpenEntry(kExistingEntryKey, &entry, cb.callback());
-    EXPECT_EQ(net::OK, cb.GetResult(rv));
-    EXPECT_TRUE(entry);
+    ASSERT_EQ(net::OK, cb.GetResult(rv));
+    EXPECT_NE(nullptr, entry);
     entry->Close();
   }
 }
@@ -2750,7 +2752,7 @@ void DiskCacheBackendTest::BackendDisabledAPI() {
   iter = CreateIterator();
   EXPECT_NE(net::OK, iter->OpenNextEntry(&entry2));
 
-  std::vector<std::pair<std::string, std::string>> stats;
+  base::StringPairs stats;
   cache_->GetStats(&stats);
   EXPECT_TRUE(stats.empty());
   cache_->OnExternalCacheHit("First");
@@ -3216,11 +3218,6 @@ TEST_F(DiskCacheBackendTest, SimpleCacheAppCacheKeying) {
   BackendKeying();
 }
 
-TEST_F(DiskCacheBackendTest, DISABLED_SimpleCacheSetSize) {
-  SetSimpleCacheMode();
-  BackendSetSize();
-}
-
 // MacOS has a default open file limit of 256 files, which is incompatible with
 // this simple cache test.
 #if defined(OS_MACOSX)
@@ -3329,11 +3326,10 @@ TEST_F(DiskCacheBackendTest, SimpleCacheOpenBadFile) {
       disk_cache::simple_util::GetFilenameFromKeyAndFileIndex(key, 0));
 
   disk_cache::SimpleFileHeader header;
-  header.initial_magic_number = GG_UINT64_C(0xbadf00d);
-  EXPECT_EQ(
-      implicit_cast<int>(sizeof(header)),
-      base::WriteFile(entry_file1_path, reinterpret_cast<char*>(&header),
-                           sizeof(header)));
+  header.initial_magic_number = UINT64_C(0xbadf00d);
+  EXPECT_EQ(static_cast<int>(sizeof(header)),
+            base::WriteFile(entry_file1_path, reinterpret_cast<char*>(&header),
+                            sizeof(header)));
   ASSERT_EQ(net::ERR_FAILED, OpenEntry(key, &entry));
 }
 
@@ -3492,8 +3488,7 @@ TEST_F(DiskCacheBackendTest, SimpleCacheEnumerationCorruption) {
 
   EXPECT_TRUE(disk_cache::simple_util::CreateCorruptFileForTests(
       key, cache_path_));
-  EXPECT_EQ(key_pool.size() + 1,
-            implicit_cast<size_t>(cache_->GetEntryCount()));
+  EXPECT_EQ(key_pool.size() + 1, static_cast<size_t>(cache_->GetEntryCount()));
 
   // Check that enumeration returns all entries but the corrupt one.
   std::set<std::string> keys_to_match(key_pool);

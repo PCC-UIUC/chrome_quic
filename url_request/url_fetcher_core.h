@@ -5,6 +5,8 @@
 #ifndef NET_URL_REQUEST_URL_FETCHER_CORE_H_
 #define NET_URL_REQUEST_URL_FETCHER_CORE_H_
 
+#include <stdint.h>
+
 #include <set>
 #include <string>
 
@@ -20,6 +22,7 @@
 #include "net/http/http_request_headers.h"
 #include "net/url_request/url_fetcher.h"
 #include "net/url_request/url_request.h"
+#include "net/url_request/url_request_context_getter_observer.h"
 #include "net/url_request/url_request_status.h"
 #include "url/gurl.h"
 
@@ -36,9 +39,9 @@ class URLFetcherResponseWriter;
 class URLRequestContextGetter;
 class URLRequestThrottlerEntryInterface;
 
-class URLFetcherCore
-    : public base::RefCountedThreadSafe<URLFetcherCore>,
-      public URLRequest::Delegate {
+class URLFetcherCore : public base::RefCountedThreadSafe<URLFetcherCore>,
+                       public URLRequest::Delegate,
+                       public URLRequestContextGetterObserver {
  public:
   URLFetcherCore(URLFetcher* fetcher,
                  const GURL& original_url,
@@ -108,11 +111,14 @@ class URLFetcherCore
   HttpResponseHeaders* GetResponseHeaders() const;
   HostPortPair GetSocketAddress() const;
   bool WasFetchedViaProxy() const;
+  bool WasCached() const;
   const GURL& GetOriginalURL() const;
   const GURL& GetURL() const;
   const URLRequestStatus& GetStatus() const;
   int GetResponseCode() const;
   const ResponseCookies& GetCookies() const;
+  int64_t GetReceivedResponseContentLength() const;
+  int64_t GetTotalReceivedBytes() const;
   // Reports that the received content was malformed (i.e. failed parsing
   // or validation). This makes the throttling logic that does exponential
   // back-off when servers are having problems treat the current request as
@@ -133,6 +139,9 @@ class URLFetcherCore
   void OnCertificateRequested(URLRequest* request,
                               SSLCertRequestInfo* cert_request_info) override;
 
+  // Overridden from URLRequestContextGetterObserver:
+  void OnContextShuttingDown() override;
+
   URLFetcherDelegate* delegate() const { return delegate_; }
   static void CancelAll();
   static int GetNumFetcherCores();
@@ -142,6 +151,7 @@ class URLFetcherCore
  private:
   friend class base::RefCountedThreadSafe<URLFetcherCore>;
 
+  // TODO(mmenke):  Remove this class.
   class Registry {
    public:
     Registry();
@@ -176,6 +186,10 @@ class URLFetcherCore
   void NotifyMalformedContent();
   void DidFinishWriting(int result);
   void RetryOrCompleteUrlFetch();
+
+  // Cancels the URLRequest and informs the delegate that it failed with the
+  // specified error. Must be called on network thread.
+  void CancelRequestAndInformDelegate(int result);
 
   // Deletes the request, removes it from the registry, and removes the
   // destruction observer.
@@ -236,6 +250,9 @@ class URLFetcherCore
   HttpRequestHeaders extra_request_headers_;
   scoped_refptr<HttpResponseHeaders> response_headers_;
   bool was_fetched_via_proxy_;
+  bool was_cached_;
+  int64_t received_response_content_length_;
+  int64_t total_received_bytes_;
   HostPortPair socket_address_;
 
   bool upload_content_set_;          // SetUploadData has been called
@@ -309,8 +326,7 @@ class URLFetcherCore
 
   // Timer to poll the progress of uploading for POST and PUT requests.
   // When crbug.com/119629 is fixed, scoped_ptr is not necessary here.
-  scoped_ptr<base::RepeatingTimer<URLFetcherCore> >
-      upload_progress_checker_timer_;
+  scoped_ptr<base::RepeatingTimer> upload_progress_checker_timer_;
   // Number of bytes sent so far.
   int64 current_upload_bytes_;
   // Number of bytes received so far.

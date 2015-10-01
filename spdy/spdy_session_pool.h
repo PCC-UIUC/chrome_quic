@@ -11,7 +11,6 @@
 #include <vector>
 
 #include "base/basictypes.h"
-#include "base/gtest_prod_util.h"
 #include "base/memory/ref_counted.h"
 #include "base/memory/weak_ptr.h"
 #include "net/base/host_port_pair.h"
@@ -58,7 +57,6 @@ class NET_EXPORT SpdySessionPool
       size_t session_max_recv_window_size,
       size_t stream_max_recv_window_size,
       size_t initial_max_concurrent_streams,
-      size_t max_concurrent_streams_limit,
       SpdySessionPool::TimeFunc time_func,
       const std::string& trusted_spdy_proxy);
   ~SpdySessionPool() override;
@@ -120,9 +118,8 @@ class NET_EXPORT SpdySessionPool
   // closing the current ones.
   void CloseAllSessions();
 
-  // Creates a Value summary of the state of the spdy session pool. The caller
-  // responsible for deleting the returned value.
-  base::Value* SpdySessionPoolInfoToValue() const;
+  // Creates a Value summary of the state of the spdy session pool.
+  scoped_ptr<base::Value> SpdySessionPoolInfoToValue() const;
 
   base::WeakPtr<HttpServerProperties> http_server_properties() {
     return http_server_properties_;
@@ -216,7 +213,6 @@ class NET_EXPORT SpdySessionPool
   size_t session_max_recv_window_size_;
   size_t stream_max_recv_window_size_;
   size_t initial_max_concurrent_streams_;
-  size_t max_concurrent_streams_limit_;
   TimeFunc time_func_;
 
   // This SPDY proxy is allowed to push resources from origins that are

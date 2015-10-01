@@ -12,9 +12,9 @@
 #include "base/strings/string_piece.h"
 #include "net/base/completion_callback.h"
 #include "net/base/request_priority.h"
-#include "net/log/captured_net_log_entry.h"
-#include "net/log/net_log_unittest.h"
 #include "net/log/test_net_log.h"
+#include "net/log/test_net_log_entry.h"
+#include "net/log/test_net_log_util.h"
 #include "net/socket/next_proto.h"
 #include "net/socket/socket_test_util.h"
 #include "net/spdy/buffered_spdy_framer.h"
@@ -111,8 +111,7 @@ class SpdyStreamTest : public ::testing::Test,
 INSTANTIATE_TEST_CASE_P(NextProto,
                         SpdyStreamTest,
                         testing::Values(kProtoSPDY31,
-                                        kProtoSPDY4_14,
-                                        kProtoSPDY4));
+                                        kProtoHTTP2));
 
 TEST_P(SpdyStreamTest, SendDataAfterOpen) {
   GURL url(kStreamUrl);
@@ -172,7 +171,93 @@ TEST_P(SpdyStreamTest, SendDataAfterOpen) {
   EXPECT_EQ("200", delegate.GetResponseHeaderValue(spdy_util_.GetStatusKey()));
   EXPECT_EQ(std::string(kPostBody, kPostBodyLength),
             delegate.TakeReceivedData());
-  EXPECT_TRUE(data.at_write_eof());
+  EXPECT_TRUE(data.AllWriteDataConsumed());
+}
+
+// Delegate that receives trailers.
+class StreamDelegateWithTrailers : public test::StreamDelegateWithBody {
+ public:
+  StreamDelegateWithTrailers(const base::WeakPtr<SpdyStream>& stream,
+                             base::StringPiece data)
+      : StreamDelegateWithBody(stream, data) {}
+
+  ~StreamDelegateWithTrailers() override {}
+
+  void OnTrailers(const SpdyHeaderBlock& trailers) override {
+    trailers_ = trailers;
+  }
+
+  const SpdyHeaderBlock& trailers() const { return trailers_; }
+
+ private:
+  SpdyHeaderBlock trailers_;
+};
+
+// Regression test for crbug.com/481033.
+TEST_P(SpdyStreamTest, Trailers) {
+  GURL url(kStreamUrl);
+
+  session_ =
+      SpdySessionDependencies::SpdyCreateSessionDeterministic(&session_deps_);
+
+  scoped_ptr<SpdyFrame> req(spdy_util_.ConstructSpdyPost(
+      kStreamUrl, 1, kPostBodyLength, LOWEST, NULL, 0));
+  AddWrite(*req);
+
+  scoped_ptr<SpdyFrame> msg(
+      spdy_util_.ConstructSpdyBodyFrame(1, kPostBody, kPostBodyLength, true));
+  AddWrite(*msg);
+
+  scoped_ptr<SpdyFrame> resp(spdy_util_.ConstructSpdyPostSynReply(NULL, 0));
+  AddRead(*resp);
+
+  scoped_ptr<SpdyFrame> echo(
+      spdy_util_.ConstructSpdyBodyFrame(1, kPostBody, kPostBodyLength, false));
+  AddRead(*echo);
+
+  const char* const kExtraHeaders[] = {"foo", "bar"};
+  scoped_ptr<SpdyFrame> trailers(
+      spdy_util_.ConstructSpdyHeaderFrame(1, kExtraHeaders, 1));
+  AddRead(*trailers);
+
+  AddReadEOF();
+
+  DeterministicSocketData data(GetReads(), GetNumReads(), GetWrites(),
+                               GetNumWrites());
+  MockConnect connect_data(SYNCHRONOUS, OK);
+  data.set_connect_data(connect_data);
+
+  session_deps_.deterministic_socket_factory->AddSocketDataProvider(&data);
+
+  base::WeakPtr<SpdySession> session(CreateDefaultSpdySession());
+
+  base::WeakPtr<SpdyStream> stream = CreateStreamSynchronously(
+      SPDY_REQUEST_RESPONSE_STREAM, session, url, LOWEST, BoundNetLog());
+  ASSERT_TRUE(stream.get() != NULL);
+
+  StreamDelegateWithTrailers delegate(stream, kPostBodyStringPiece);
+  stream->SetDelegate(&delegate);
+
+  EXPECT_FALSE(stream->HasUrlFromHeaders());
+
+  scoped_ptr<SpdyHeaderBlock> headers(
+      spdy_util_.ConstructPostHeaderBlock(kStreamUrl, kPostBodyLength));
+  EXPECT_EQ(ERR_IO_PENDING,
+            stream->SendRequestHeaders(headers.Pass(), MORE_DATA_TO_SEND));
+  EXPECT_TRUE(stream->HasUrlFromHeaders());
+  EXPECT_EQ(kStreamUrl, stream->GetUrlFromHeaders().spec());
+
+  data.RunFor(GetNumReads() + GetNumWrites());
+  EXPECT_EQ(ERR_CONNECTION_CLOSED, delegate.WaitForClose());
+
+  EXPECT_TRUE(delegate.send_headers_completed());
+  EXPECT_EQ("200", delegate.GetResponseHeaderValue(spdy_util_.GetStatusKey()));
+  const SpdyHeaderBlock& received_trailers = delegate.trailers();
+  SpdyHeaderBlock::const_iterator it = received_trailers.find("foo");
+  EXPECT_EQ("bar", it->second);
+  EXPECT_EQ(std::string(kPostBody, kPostBodyLength),
+            delegate.TakeReceivedData());
+  EXPECT_TRUE(data.AllWriteDataConsumed());
 }
 
 TEST_P(SpdyStreamTest, PushedStream) {
@@ -292,10 +377,10 @@ TEST_P(SpdyStreamTest, StreamError) {
   EXPECT_EQ("200", delegate.GetResponseHeaderValue(spdy_util_.GetStatusKey()));
   EXPECT_EQ(std::string(kPostBody, kPostBodyLength),
             delegate.TakeReceivedData());
-  EXPECT_TRUE(data.at_write_eof());
+  EXPECT_TRUE(data.AllWriteDataConsumed());
 
   // Check that the NetLog was filled reasonably.
-  CapturedNetLogEntry::List entries;
+  TestNetLogEntry::List entries;
   log.GetEntries(&entries);
   EXPECT_LT(0u, entries.size());
 
@@ -372,7 +457,7 @@ TEST_P(SpdyStreamTest, SendLargeDataAfterOpenRequestResponse) {
   EXPECT_TRUE(delegate.send_headers_completed());
   EXPECT_EQ("200", delegate.GetResponseHeaderValue(spdy_util_.GetStatusKey()));
   EXPECT_EQ(std::string(), delegate.TakeReceivedData());
-  EXPECT_TRUE(data.at_write_eof());
+  EXPECT_TRUE(data.AllWriteDataConsumed());
 }
 
 // Make sure that large blocks of data are properly split up into
@@ -435,7 +520,7 @@ TEST_P(SpdyStreamTest, SendLargeDataAfterOpenBidirectional) {
   EXPECT_TRUE(delegate.send_headers_completed());
   EXPECT_EQ("200", delegate.GetResponseHeaderValue(spdy_util_.GetStatusKey()));
   EXPECT_EQ(std::string(), delegate.TakeReceivedData());
-  EXPECT_TRUE(data.at_write_eof());
+  EXPECT_TRUE(data.AllWriteDataConsumed());
 }
 
 // Receiving a header with uppercase ASCII should result in a protocol
@@ -875,7 +960,7 @@ void SpdyStreamTest::RunResumeAfterUnstallRequestResponseTest(
   EXPECT_TRUE(delegate.send_headers_completed());
   EXPECT_EQ("200", delegate.GetResponseHeaderValue(":status"));
   EXPECT_EQ(std::string(), delegate.TakeReceivedData());
-  EXPECT_TRUE(data.at_write_eof());
+  EXPECT_TRUE(data.AllWriteDataConsumed());
 }
 
 TEST_P(SpdyStreamTest, ResumeAfterSendWindowSizeIncreaseRequestResponse) {
@@ -964,7 +1049,7 @@ void SpdyStreamTest::RunResumeAfterUnstallBidirectionalTest(
   EXPECT_EQ("200", delegate.GetResponseHeaderValue(":status"));
   EXPECT_EQ(std::string(kPostBody, kPostBodyLength),
             delegate.TakeReceivedData());
-  EXPECT_TRUE(data.at_write_eof());
+  EXPECT_TRUE(data.AllWriteDataConsumed());
 }
 
 TEST_P(SpdyStreamTest, ResumeAfterSendWindowSizeIncreaseBidirectional) {

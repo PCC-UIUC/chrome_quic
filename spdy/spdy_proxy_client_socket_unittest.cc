@@ -13,10 +13,10 @@
 #include "net/dns/mock_host_resolver.h"
 #include "net/http/http_response_headers.h"
 #include "net/http/http_response_info.h"
-#include "net/log/captured_net_log_entry.h"
 #include "net/log/net_log.h"
-#include "net/log/net_log_unittest.h"
 #include "net/log/test_net_log.h"
+#include "net/log/test_net_log_entry.h"
+#include "net/log/test_net_log_util.h"
 #include "net/socket/client_socket_factory.h"
 #include "net/socket/next_proto.h"
 #include "net/socket/socket_test_util.h"
@@ -143,8 +143,7 @@ class SpdyProxyClientSocketTest
 INSTANTIATE_TEST_CASE_P(NextProto,
                         SpdyProxyClientSocketTest,
                         testing::Values(kProtoSPDY31,
-                                        kProtoSPDY4_14,
-                                        kProtoSPDY4));
+                                        kProtoHTTP2));
 
 SpdyProxyClientSocketTest::SpdyProxyClientSocketTest()
     : spdy_util_(GetParam()),
@@ -311,11 +310,15 @@ void SpdyProxyClientSocketTest::AssertAsyncWriteWithReadsSucceeds(
 
 void SpdyProxyClientSocketTest::PopulateConnectRequestIR(
     SpdyHeaderBlock* block) {
-  (*block)[spdy_util_.GetMethodKey()] = "CONNECT";
-  (*block)[spdy_util_.GetPathKey()] = kOriginHostPort;
-  (*block)[spdy_util_.GetHostKey()] = kOriginHost;
-  (*block)["user-agent"] = kUserAgent;
   spdy_util_.MaybeAddVersionHeader(block);
+  (*block)[spdy_util_.GetMethodKey()] = "CONNECT";
+  if (spdy_util_.spdy_version() == HTTP2) {
+    (*block)[spdy_util_.GetHostKey()] = kOriginHostPort;
+  } else {
+    (*block)[spdy_util_.GetHostKey()] = kOriginHost;
+    (*block)[spdy_util_.GetPathKey()] = kOriginHostPort;
+  }
+  (*block)["user-agent"] = kUserAgent;
 }
 
 void SpdyProxyClientSocketTest::PopulateConnectReplyIR(SpdyHeaderBlock* block,
@@ -1275,7 +1278,7 @@ TEST_P(SpdyProxyClientSocketTest, NetLog) {
   NetLog::Source sock_source = sock_->NetLog().source();
   sock_.reset();
 
-  CapturedNetLogEntry::List entry_list;
+  TestNetLogEntry::List entry_list;
   net_log_.GetEntriesForSource(sock_source, &entry_list);
 
   ASSERT_EQ(entry_list.size(), 10u);

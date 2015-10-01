@@ -13,12 +13,11 @@ namespace der {
 
 Parser::Parser() : input_(Input()), advance_mark_(Mark::NullMark()) {
 }
+
 Parser::Parser(const Input& input)
     : input_(input), advance_mark_(Mark::NullMark()) {
 }
 
-// Reads the next TLV from the input and writes the tag and value to the
-// output parameters |tag| and |out|.
 bool Parser::PeekTagAndValue(Tag* tag, Input* out) {
   ByteReader reader = input_;
 
@@ -181,10 +180,17 @@ bool Parser::ReadSequence(Parser* out) {
 }
 
 bool Parser::ReadUint64(uint64_t* out) {
-  Input encodedInt;
-  if (!ReadTag(kInteger, &encodedInt))
+  Input encoded_int;
+  if (!ReadTag(kInteger, &encoded_int))
     return false;
-  return ParseUint64(encodedInt, out);
+  return ParseUint64(encoded_int, out);
+}
+
+bool Parser::ReadBitString(BitString* bit_string) {
+  Input value;
+  if (!ReadTag(kBitString, &value))
+    return false;
+  return ParseBitString(value, bit_string);
 }
 
 }  // namespace der

@@ -135,7 +135,7 @@ CanonicalCookie::CanonicalCookie(const GURL& url,
                                  bool httponly,
                                  bool firstpartyonly,
                                  CookiePriority priority)
-    : source_(GetCookieSourceFromURL(url)),
+    : source_(url.SchemeIsFile() ? url : url.GetOrigin()),
       name_(name),
       value_(value),
       domain_(domain),
@@ -146,11 +146,10 @@ CanonicalCookie::CanonicalCookie(const GURL& url,
       secure_(secure),
       httponly_(httponly),
       first_party_only_(firstpartyonly),
-      priority_(priority) {
-}
+      priority_(priority) {}
 
 CanonicalCookie::CanonicalCookie(const GURL& url, const ParsedCookie& pc)
-    : source_(GetCookieSourceFromURL(url)),
+    : source_(url.SchemeIsFile() ? url : url.GetOrigin()),
       name_(pc.Name()),
       value_(pc.Value()),
       path_(CanonPath(url, pc)),
@@ -178,18 +177,6 @@ CanonicalCookie::CanonicalCookie(const GURL& url, const ParsedCookie& pc)
 }
 
 CanonicalCookie::~CanonicalCookie() {
-}
-
-std::string CanonicalCookie::GetCookieSourceFromURL(const GURL& url) {
-  if (url.SchemeIsFile())
-    return url.spec();
-
-  url::Replacements<char> replacements;
-  replacements.ClearPort();
-  if (url.SchemeIsSecure())
-    replacements.SetScheme("http", url::Component(0, 4));
-
-  return url.GetOrigin().ReplaceComponents(replacements).spec();
 }
 
 // static
@@ -394,7 +381,7 @@ bool CanonicalCookie::IncludeForRequestURL(const GURL& url,
     return false;
   // Secure cookies should not be included in requests for URLs with an
   // insecure scheme.
-  if (IsSecure() && !url.SchemeIsSecure())
+  if (IsSecure() && !url.SchemeIsCryptographic())
     return false;
   // Don't include cookies for requests that don't apply to the cookie domain.
   if (!IsDomainMatch(url.host()))

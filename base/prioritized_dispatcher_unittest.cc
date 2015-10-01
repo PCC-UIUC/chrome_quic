@@ -153,7 +153,7 @@ class PrioritizedDispatcherTest : public testing::Test {
     return job;
   }
 
-  void Expect(std::string log) {
+  void Expect(const std::string& log) {
     EXPECT_EQ(0u, dispatcher_->num_queued_jobs());
     EXPECT_EQ(0u, dispatcher_->num_running_jobs());
     EXPECT_EQ(log, log_);
@@ -541,23 +541,6 @@ TEST_F(PrioritizedDispatcherTest, CancelMissing) {
   PrioritizedDispatcher::Handle handle = job_b->handle();
   ASSERT_FALSE(handle.is_null());
   dispatcher_->Cancel(handle);
-  EXPECT_DEBUG_DEATH(dispatcher_->Cancel(handle), "");
-}
-
-// TODO(szym): Fix the PriorityQueue::Pointer check to die here.
-// http://crbug.com/130846
-TEST_F(PrioritizedDispatcherTest, DISABLED_CancelIncompatible) {
-  PrioritizedDispatcher::Limits limits(NUM_PRIORITIES, 1);
-  Prepare(limits);
-  AddJob('a', IDLE);
-  TestJob* job_b = AddJob('b', IDLE);
-  PrioritizedDispatcher::Handle handle = job_b->handle();
-  ASSERT_FALSE(handle.is_null());
-
-  // New dispatcher.
-  Prepare(limits);
-  AddJob('a', IDLE);
-  AddJob('b', IDLE);
   EXPECT_DEBUG_DEATH(dispatcher_->Cancel(handle), "");
 }
 #endif  // GTEST_HAS_DEATH_TEST && !defined(NDEBUG)

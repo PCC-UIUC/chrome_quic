@@ -9,17 +9,19 @@
 #include "base/callback_helpers.h"
 #include "base/compiler_specific.h"
 #include "base/logging.h"
-#include "base/metrics/histogram.h"
+#include "base/metrics/histogram_macros.h"
 #include "base/profiler/scoped_tracker.h"
 #include "base/stl_util.h"
 #include "base/strings/stringprintf.h"
 #include "crypto/signature_verifier.h"
+#include "net/base/host_port_pair.h"
 #include "net/base/net_errors.h"
 #include "net/cert/asn1_util.h"
+#include "net/cert/cert_policy_enforcer.h"
 #include "net/cert/cert_status_flags.h"
 #include "net/cert/cert_verifier.h"
 #include "net/cert/cert_verify_result.h"
-#include "net/cert/single_request_cert_verifier.h"
+#include "net/cert/ct_verify_result.h"
 #include "net/cert/x509_certificate.h"
 #include "net/cert/x509_util.h"
 #include "net/http/transport_security_state.h"
@@ -47,7 +49,9 @@ class ProofVerifierChromium::Job {
  public:
   Job(ProofVerifierChromium* proof_verifier,
       CertVerifier* cert_verifier,
+      CertPolicyEnforcer* cert_policy_enforcer,
       TransportSecurityState* transport_security_state,
+      int cert_verify_flags,
       const BoundNetLog& net_log);
 
   // Starts the proof verification.  If |QUIC_PENDING| is returned, then
@@ -80,7 +84,10 @@ class ProofVerifierChromium::Job {
   ProofVerifierChromium* proof_verifier_;
 
   // The underlying verifier used for verifying certificates.
-  scoped_ptr<SingleRequestCertVerifier> verifier_;
+  CertVerifier* verifier_;
+  scoped_ptr<CertVerifier::Request> cert_verifier_request_;
+
+  CertPolicyEnforcer* policy_enforcer_;
 
   TransportSecurityState* transport_security_state_;
 
@@ -94,6 +101,10 @@ class ProofVerifierChromium::Job {
   // X509Certificate from a chain of DER encoded certificates.
   scoped_refptr<X509Certificate> cert_;
 
+  // |cert_verify_flags| is bitwise OR'd of CertVerifier::VerifyFlags and it is
+  // passed to CertVerifier::Verify.
+  int cert_verify_flags_;
+
   State next_state_;
 
   BoundNetLog net_log_;
@@ -104,14 +115,17 @@ class ProofVerifierChromium::Job {
 ProofVerifierChromium::Job::Job(
     ProofVerifierChromium* proof_verifier,
     CertVerifier* cert_verifier,
+    CertPolicyEnforcer* cert_policy_enforcer,
     TransportSecurityState* transport_security_state,
+    int cert_verify_flags,
     const BoundNetLog& net_log)
     : proof_verifier_(proof_verifier),
-      verifier_(new SingleRequestCertVerifier(cert_verifier)),
+      verifier_(cert_verifier),
+      policy_enforcer_(cert_policy_enforcer),
       transport_security_state_(transport_security_state),
+      cert_verify_flags_(cert_verify_flags),
       next_state_(STATE_NONE),
-      net_log_(net_log) {
-}
+      net_log_(net_log) {}
 
 QuicAsyncStatus ProofVerifierChromium::Job::VerifyProof(
     const string& hostname,
@@ -222,46 +236,47 @@ void ProofVerifierChromium::Job::OnIOComplete(int result) {
 int ProofVerifierChromium::Job::DoVerifyCert(int result) {
   next_state_ = STATE_VERIFY_CERT_COMPLETE;
 
-  int flags = 0;
   return verifier_->Verify(
-      cert_.get(),
-      hostname_,
-      flags,
-      SSLConfigService::GetCRLSet().get(),
-      &verify_details_->cert_verify_result,
+      cert_.get(), hostname_, std::string(), cert_verify_flags_,
+      SSLConfigService::GetCRLSet().get(), &verify_details_->cert_verify_result,
       base::Bind(&ProofVerifierChromium::Job::OnIOComplete,
                  base::Unretained(this)),
-      net_log_);
+      &cert_verifier_request_, net_log_);
 }
 
 int ProofVerifierChromium::Job::DoVerifyCertComplete(int result) {
-  verifier_.reset();
+  cert_verifier_request_.reset();
 
   const CertVerifyResult& cert_verify_result =
       verify_details_->cert_verify_result;
   const CertStatus cert_status = cert_verify_result.cert_status;
+  if (result == OK && policy_enforcer_ &&
+      (cert_verify_result.cert_status & CERT_STATUS_IS_EV)) {
+    // QUIC does not support OCSP stapling or the CT TLS extension; as a
+    // result, CT can never be verified, thus the result is always empty.
+    ct::CTVerifyResult empty_ct_result;
+    if (!policy_enforcer_->DoesConformToCTEVPolicy(
+            cert_verify_result.verified_cert.get(),
+            SSLConfigService::GetEVCertsWhitelist().get(), empty_ct_result,
+            net_log_)) {
+      verify_details_->cert_verify_result.cert_status |=
+          CERT_STATUS_CT_COMPLIANCE_FAILED;
+      verify_details_->cert_verify_result.cert_status &= ~CERT_STATUS_IS_EV;
+    }
+  }
+
+  // TODO(estark): replace 0 below with the port of the connection.
   if (transport_security_state_ &&
       (result == OK ||
        (IsCertificateError(result) && IsCertStatusMinorError(cert_status))) &&
       !transport_security_state_->CheckPublicKeyPins(
-          hostname_,
+          HostPortPair(hostname_, 0),
           cert_verify_result.is_issued_by_known_root,
-          cert_verify_result.public_key_hashes,
+          cert_verify_result.public_key_hashes, cert_.get(),
+          cert_verify_result.verified_cert.get(),
+          TransportSecurityState::ENABLE_PIN_REPORTS,
           &verify_details_->pinning_failure_log)) {
     result = ERR_SSL_PINNED_KEY_NOT_IN_CERT_CHAIN;
-  }
-
-  scoped_refptr<ct::EVCertsWhitelist> ev_whitelist =
-      SSLConfigService::GetEVCertsWhitelist();
-  if ((cert_status & CERT_STATUS_IS_EV) && ev_whitelist.get() &&
-      ev_whitelist->IsValid()) {
-    const SHA256HashValue fingerprint(
-        X509Certificate::CalculateFingerprint256(cert_->os_cert_handle()));
-
-    UMA_HISTOGRAM_BOOLEAN(
-        "Net.SSL_EVCertificateInWhitelist",
-        ev_whitelist->ContainsCertificateHash(
-            std::string(reinterpret_cast<const char*>(fingerprint.data), 8)));
   }
 
   if (result != OK) {
@@ -359,10 +374,11 @@ bool ProofVerifierChromium::Job::VerifySignature(const string& signed_data,
 
 ProofVerifierChromium::ProofVerifierChromium(
     CertVerifier* cert_verifier,
+    CertPolicyEnforcer* cert_policy_enforcer,
     TransportSecurityState* transport_security_state)
     : cert_verifier_(cert_verifier),
-      transport_security_state_(transport_security_state) {
-}
+      cert_policy_enforcer_(cert_policy_enforcer),
+      transport_security_state_(transport_security_state) {}
 
 ProofVerifierChromium::~ProofVerifierChromium() {
   STLDeleteElements(&active_jobs_);
@@ -383,13 +399,12 @@ QuicAsyncStatus ProofVerifierChromium::VerifyProof(
   }
   const ProofVerifyContextChromium* chromium_context =
       reinterpret_cast<const ProofVerifyContextChromium*>(verify_context);
-  scoped_ptr<Job> job(new Job(this,
-                              cert_verifier_,
-                              transport_security_state_,
-                              chromium_context->net_log));
-  QuicAsyncStatus status = job->VerifyProof(hostname, server_config, certs,
-                                            signature, error_details,
-                                            verify_details, callback);
+  scoped_ptr<Job> job(new Job(
+      this, cert_verifier_, cert_policy_enforcer_, transport_security_state_,
+      chromium_context->cert_verify_flags, chromium_context->net_log));
+  QuicAsyncStatus status =
+      job->VerifyProof(hostname, server_config, certs, signature, error_details,
+                       verify_details, callback);
   if (status == QUIC_PENDING) {
     active_jobs_.insert(job.release());
   }

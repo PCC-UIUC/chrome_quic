@@ -16,9 +16,10 @@
 #include "net/base/address_list.h"
 #include "net/base/host_port_pair.h"
 #include "net/base/net_errors.h"
-#include "net/base/net_util.h"
+#include "net/base/port_util.h"
 #include "net/base/test_completion_callback.h"
 #include "net/cert/test_root_certs.h"
+#include "net/cert/x509_certificate.h"
 #include "net/dns/host_resolver.h"
 #include "net/log/net_log.h"
 #include "url/gurl.h"
@@ -50,8 +51,6 @@ std::string GetClientCertType(SSLClientCertType type) {
   switch (type) {
     case CLIENT_CERT_RSA_SIGN:
       return "rsa_sign";
-    case CLIENT_CERT_DSS_SIGN:
-      return "dss_sign";
     case CLIENT_CERT_ECDSA_SIGN:
       return "ecdsa_sign";
     default:
@@ -97,6 +96,29 @@ base::StringValue* GetTLSIntoleranceType(
   }
 }
 
+bool GetLocalCertificatesDir(const base::FilePath& certificates_dir,
+                             base::FilePath* local_certificates_dir) {
+  if (certificates_dir.IsAbsolute()) {
+    *local_certificates_dir = certificates_dir;
+    return true;
+  }
+
+  base::FilePath src_dir;
+  if (!PathService::Get(base::DIR_SOURCE_ROOT, &src_dir))
+    return false;
+
+  *local_certificates_dir = src_dir.Append(certificates_dir);
+  return true;
+}
+
+scoped_ptr<base::ListValue> GetTokenBindingParams(std::vector<int> params) {
+  scoped_ptr<base::ListValue> values(new base::ListValue());
+  for (int param : params) {
+    values->Append(new base::FundamentalValue(param));
+  }
+  return values;
+}
+
 }  // namespace
 
 BaseTestServer::SSLOptions::SSLOptions()
@@ -113,8 +135,9 @@ BaseTestServer::SSLOptions::SSLOptions()
       staple_ocsp_response(false),
       ocsp_server_unavailable(false),
       enable_npn(false),
-      alert_after_handshake(false) {
-}
+      alert_after_handshake(false),
+      disable_channel_id(false),
+      disable_extended_master_secret(false) {}
 
 BaseTestServer::SSLOptions::SSLOptions(
     BaseTestServer::SSLOptions::ServerCertificate cert)
@@ -131,8 +154,9 @@ BaseTestServer::SSLOptions::SSLOptions(
       staple_ocsp_response(false),
       ocsp_server_unavailable(false),
       enable_npn(false),
-      alert_after_handshake(false) {
-}
+      alert_after_handshake(false),
+      disable_channel_id(false),
+      disable_extended_master_secret(false) {}
 
 BaseTestServer::SSLOptions::~SSLOptions() {}
 
@@ -149,6 +173,8 @@ base::FilePath BaseTestServer::SSLOptions::GetCertificateFile() const {
       // This chain uses its own dedicated test root certificate to avoid
       // side-effects that may affect testing.
       return base::FilePath(FILE_PATH_LITERAL("redundant-server-chain.pem"));
+    case CERT_BAD_VALIDITY:
+      return base::FilePath(FILE_PATH_LITERAL("bad_validity.pem"));
     case CERT_AUTO:
       return base::FilePath();
     default:
@@ -184,7 +210,8 @@ BaseTestServer::BaseTestServer(Type type, const std::string& host)
     : type_(type),
       started_(false),
       log_to_console_(false),
-      ws_basic_auth_(false) {
+      ws_basic_auth_(false),
+      no_anonymous_ftp_user_(false) {
   Init(host);
 }
 
@@ -193,7 +220,8 @@ BaseTestServer::BaseTestServer(Type type, const SSLOptions& ssl_options)
       type_(type),
       started_(false),
       log_to_console_(false),
-      ws_basic_auth_(false) {
+      ws_basic_auth_(false),
+      no_anonymous_ftp_user_(false) {
   DCHECK(UsingSSL(type));
   Init(GetHostname(type, ssl_options));
 }
@@ -236,6 +264,13 @@ bool BaseTestServer::GetAddressList(AddressList* address_list) const {
 
   scoped_ptr<HostResolver> resolver(HostResolver::CreateDefaultResolver(NULL));
   HostResolver::RequestInfo info(host_port_pair_);
+  // Limit the lookup to IPv4. When started with the default
+  // address of kLocalhost, testserver.py only supports IPv4.
+  // If a custom hostname is used, it's possible that the test
+  // server will listen on both IPv4 and IPv6, so this will
+  // still work. The testserver does not support explicit
+  // IPv6 literal hostnames.
+  info.set_address_family(ADDRESS_FAMILY_IPV4);
   TestCompletionCallback callback;
   int rv = resolver->Resolve(info,
                              DEFAULT_PRIORITY,
@@ -316,16 +351,36 @@ bool BaseTestServer::LoadTestRootCert() const {
     return false;
 
   // Should always use absolute path to load the root certificate.
-  base::FilePath root_certificate_path = certificates_dir_;
-  if (!certificates_dir_.IsAbsolute()) {
-    base::FilePath src_dir;
-    if (!PathService::Get(base::DIR_SOURCE_ROOT, &src_dir))
-      return false;
-    root_certificate_path = src_dir.Append(certificates_dir_);
-  }
+  base::FilePath root_certificate_path;
+  if (!GetLocalCertificatesDir(certificates_dir_, &root_certificate_path))
+    return false;
 
   return root_certs->AddFromFile(
       root_certificate_path.AppendASCII("root_ca_cert.pem"));
+}
+
+scoped_refptr<X509Certificate> BaseTestServer::GetCertificate() const {
+  base::FilePath certificate_path;
+  if (!GetLocalCertificatesDir(certificates_dir_, &certificate_path))
+    return nullptr;
+
+  base::FilePath certificate_file(ssl_options_.GetCertificateFile());
+  if (certificate_file.value().empty())
+    return nullptr;
+
+  certificate_path = certificate_path.Append(certificate_file);
+
+  std::string cert_data;
+  if (!base::ReadFileToString(certificate_path, &cert_data))
+    return nullptr;
+
+  CertificateList certs_in_file =
+      X509Certificate::CreateCertificateListFromBytes(
+          cert_data.data(), cert_data.size(),
+          X509Certificate::FORMAT_PEM_CERT_SEQUENCE);
+  if (certs_in_file.empty())
+    return nullptr;
+  return certs_in_file[0];
 }
 
 void BaseTestServer::Init(const std::string& host) {
@@ -407,6 +462,11 @@ bool BaseTestServer::GenerateArguments(base::DictionaryValue* arguments) const {
   if (ws_basic_auth_) {
     DCHECK(type_ == TYPE_WS || type_ == TYPE_WSS);
     arguments->Set("ws-basic-auth", base::Value::CreateNullValue());
+  }
+
+  if (no_anonymous_ftp_user_) {
+    DCHECK_EQ(TYPE_FTP, type_);
+    arguments->Set("no-anonymous-ftp-user", base::Value::CreateNullValue());
   }
 
   if (UsingSSL(type_)) {
@@ -498,6 +558,19 @@ bool BaseTestServer::GenerateArguments(base::DictionaryValue* arguments) const {
       arguments->Set("enable-npn", base::Value::CreateNullValue());
     if (ssl_options_.alert_after_handshake)
       arguments->Set("alert-after-handshake", base::Value::CreateNullValue());
+
+    if (ssl_options_.disable_channel_id)
+      arguments->Set("disable-channel-id", base::Value::CreateNullValue());
+    if (ssl_options_.disable_extended_master_secret) {
+      arguments->Set("disable-extended-master-secret",
+                     base::Value::CreateNullValue());
+    }
+    if (!ssl_options_.supported_token_binding_params.empty()) {
+      scoped_ptr<base::ListValue> token_binding_params(new base::ListValue());
+      arguments->Set(
+          "token-binding-params",
+          GetTokenBindingParams(ssl_options_.supported_token_binding_params));
+    }
   }
 
   return GenerateAdditionalArguments(arguments);

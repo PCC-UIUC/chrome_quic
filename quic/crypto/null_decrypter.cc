@@ -3,6 +3,9 @@
 // found in the LICENSE file.
 
 #include "net/quic/crypto/null_decrypter.h"
+
+#include <stdint.h>
+
 #include "net/quic/quic_utils.h"
 #include "net/quic/quic_data_reader.h"
 
@@ -19,7 +22,7 @@ bool NullDecrypter::SetNoncePrefix(StringPiece nonce_prefix) {
   return nonce_prefix.empty();
 }
 
-bool NullDecrypter::DecryptPacket(QuicPacketSequenceNumber /*seq_number*/,
+bool NullDecrypter::DecryptPacket(QuicPacketNumber /*packet_number*/,
                                   const StringPiece& associated_data,
                                   const StringPiece& ciphertext,
                                   char* output,
@@ -50,6 +53,14 @@ StringPiece NullDecrypter::GetKey() const { return StringPiece(); }
 
 StringPiece NullDecrypter::GetNoncePrefix() const { return StringPiece(); }
 
+const char* NullDecrypter::cipher_name() const {
+  return "NULL";
+}
+
+uint32 NullDecrypter::cipher_id() const {
+  return 0;
+}
+
 bool NullDecrypter::ReadHash(QuicDataReader* reader, uint128* hash) {
   uint64 lo;
   uint32 hi;
@@ -67,7 +78,7 @@ uint128 NullDecrypter::ComputeHash(const StringPiece& data1,
                                    const StringPiece& data2) const {
   uint128 correct_hash = QuicUtils::FNV1a_128_Hash_Two(
       data1.data(), data1.length(), data2.data(), data2.length());
-  uint128 mask(GG_UINT64_C(0x0), GG_UINT64_C(0xffffffff));
+  uint128 mask(UINT64_C(0x0), UINT64_C(0xffffffff));
   mask <<= 96;
   correct_hash &= ~mask;
   return correct_hash;

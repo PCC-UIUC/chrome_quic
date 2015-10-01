@@ -5,8 +5,11 @@
 #include "net/url_request/url_request_job_factory_impl.h"
 
 #include "base/bind.h"
+#include "base/location.h"
 #include "base/memory/scoped_ptr.h"
 #include "base/memory/weak_ptr.h"
+#include "base/single_thread_task_runner.h"
+#include "base/thread_task_runner_handle.h"
 #include "net/base/request_priority.h"
 #include "net/url_request/url_request.h"
 #include "net/url_request/url_request_job.h"
@@ -29,7 +32,7 @@ class MockURLRequestJob : public URLRequestJob {
   void Start() override {
     // Start reading asynchronously so that all error reporting and data
     // callbacks happen as they would for network requests.
-    base::MessageLoop::current()->PostTask(
+    base::ThreadTaskRunnerHandle::Get()->PostTask(
         FROM_HERE,
         base::Bind(&MockURLRequestJob::StartAsync, weak_factory_.GetWeakPtr()));
   }
@@ -76,7 +79,8 @@ TEST(URLRequestJobFactoryTest, BasicProtocolHandler) {
   URLRequestJobFactoryImpl job_factory;
   TestURLRequestContext request_context;
   request_context.set_job_factory(&job_factory);
-  job_factory.SetProtocolHandler("foo", new DummyProtocolHandler);
+  job_factory.SetProtocolHandler("foo",
+                                 make_scoped_ptr(new DummyProtocolHandler));
   scoped_ptr<URLRequest> request(request_context.CreateRequest(
       GURL("foo://bar"), DEFAULT_PRIORITY, &delegate));
   request->Start();
@@ -90,8 +94,9 @@ TEST(URLRequestJobFactoryTest, DeleteProtocolHandler) {
   URLRequestJobFactoryImpl job_factory;
   TestURLRequestContext request_context;
   request_context.set_job_factory(&job_factory);
-  job_factory.SetProtocolHandler("foo", new DummyProtocolHandler);
-  job_factory.SetProtocolHandler("foo", NULL);
+  job_factory.SetProtocolHandler("foo",
+                                 make_scoped_ptr(new DummyProtocolHandler));
+  job_factory.SetProtocolHandler("foo", nullptr);
 }
 
 }  // namespace

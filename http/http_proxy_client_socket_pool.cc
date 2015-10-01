@@ -7,7 +7,6 @@
 #include <algorithm>
 
 #include "base/compiler_specific.h"
-#include "base/profiler/scoped_tracker.h"
 #include "base/time/time.h"
 #include "base/values.h"
 #include "net/base/load_flags.h"
@@ -127,10 +126,6 @@ void HttpProxyConnectJob::GetAdditionalErrorState(ClientSocketHandle * handle) {
 }
 
 void HttpProxyConnectJob::OnIOComplete(int result) {
-  // TODO(pkasting): Remove ScopedTracker below once crbug.com/455884 is fixed.
-  tracked_objects::ScopedTracker tracking_profile(
-      FROM_HERE_WITH_EXPLICIT_FUNCTION(
-          "455884 HttpProxyConnectJob::OnIOComplete"));
   int rv = DoLoop(result);
   if (rv != ERR_IO_PENDING) {
     NotifyProxyDelegateOfCompletion(rv);
@@ -259,8 +254,8 @@ int HttpProxyConnectJob::DoSSLConnectComplete(int result) {
 
   SSLClientSocket* ssl =
       static_cast<SSLClientSocket*>(transport_socket_handle_->socket());
-  using_spdy_ = ssl->was_spdy_negotiated();
   protocol_negotiated_ = ssl->GetNegotiatedProtocol();
+  using_spdy_ = NextProtoIsSPDY(protocol_negotiated_);
 
   // Reset the timer to just the length of time allowed for HttpProxy handshake
   // so that a fast SSL connection plus a slow HttpProxy failure doesn't take
@@ -516,11 +511,11 @@ LoadState HttpProxyClientSocketPool::GetLoadState(
   return base_.GetLoadState(group_name, handle);
 }
 
-base::DictionaryValue* HttpProxyClientSocketPool::GetInfoAsValue(
+scoped_ptr<base::DictionaryValue> HttpProxyClientSocketPool::GetInfoAsValue(
     const std::string& name,
     const std::string& type,
     bool include_nested_pools) const {
-  base::DictionaryValue* dict = base_.GetInfoAsValue(name, type);
+  scoped_ptr<base::DictionaryValue> dict(base_.GetInfoAsValue(name, type));
   if (include_nested_pools) {
     base::ListValue* list = new base::ListValue();
     if (transport_pool_) {
@@ -535,7 +530,7 @@ base::DictionaryValue* HttpProxyClientSocketPool::GetInfoAsValue(
     }
     dict->Set("nested_pools", list);
   }
-  return dict;
+  return dict.Pass();
 }
 
 base::TimeDelta HttpProxyClientSocketPool::ConnectionTimeout() const {

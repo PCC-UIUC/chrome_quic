@@ -7,11 +7,11 @@
 namespace net {
 
 const UploadBytesElementReader* UploadElementReader::AsBytesReader() const {
-  return NULL;
+  return nullptr;
 }
 
 const UploadFileElementReader* UploadElementReader::AsFileReader() const {
-  return NULL;
+  return nullptr;
 }
 
 bool UploadElementReader::IsInMemory() const {

@@ -9,8 +9,11 @@
 #include "base/bind.h"
 #include "base/bind_helpers.h"
 #include "base/callback_helpers.h"
+#include "base/location.h"
 #include "base/logging.h"
+#include "base/single_thread_task_runner.h"
 #include "base/strings/string_util.h"
+#include "base/thread_task_runner_handle.h"
 #include "base/values.h"
 #include "net/base/auth.h"
 #include "net/base/io_buffer.h"
@@ -188,6 +191,11 @@ bool SpdyProxyClientSocket::GetSSLInfo(SSLInfo* ssl_info) {
   NextProto protocol_negotiated;
   return spdy_stream_->GetSSLInfo(ssl_info, &was_npn_negotiated,
                                   &protocol_negotiated);
+}
+
+void SpdyProxyClientSocket::GetConnectionAttempts(
+    ConnectionAttempts* out) const {
+  out->clear();
 }
 
 int SpdyProxyClientSocket::Read(IOBuffer* buf, int buf_len,
@@ -482,12 +490,16 @@ void SpdyProxyClientSocket::OnDataSent()  {
 
   // Proxy write callbacks result in deep callback chains. Post to allow the
   // stream's write callback chain to unwind (see crbug.com/355511).
-  base::MessageLoop::current()->PostTask(
-      FROM_HERE,
-      base::Bind(&SpdyProxyClientSocket::RunCallback,
-                 write_callback_weak_factory_.GetWeakPtr(),
-                 ResetAndReturn(&write_callback_),
-                 rv));
+  base::ThreadTaskRunnerHandle::Get()->PostTask(
+      FROM_HERE, base::Bind(&SpdyProxyClientSocket::RunCallback,
+                            write_callback_weak_factory_.GetWeakPtr(),
+                            ResetAndReturn(&write_callback_), rv));
+}
+
+void SpdyProxyClientSocket::OnTrailers(const SpdyHeaderBlock& trailers) {
+  // |spdy_stream_| is of type SPDY_BIDIRECTIONAL_STREAM, so trailers are
+  // combined with response headers and this method will not be calld.
+  NOTREACHED();
 }
 
 void SpdyProxyClientSocket::OnClose(int status)  {

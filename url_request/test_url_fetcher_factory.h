@@ -5,6 +5,8 @@
 #ifndef NET_URL_REQUEST_TEST_URL_FETCHER_FACTORY_H_
 #define NET_URL_REQUEST_TEST_URL_FETCHER_FACTORY_H_
 
+#include <stdint.h>
+
 #include <list>
 #include <map>
 #include <string>
@@ -132,6 +134,12 @@ class TestURLFetcher : public URLFetcher {
   HttpResponseHeaders* GetResponseHeaders() const override;
   HostPortPair GetSocketAddress() const override;
   bool WasFetchedViaProxy() const override;
+  bool WasCached() const override;
+  // Only valid when the response was set via SetResponseString().
+  int64_t GetReceivedResponseContentLength() const override;
+  // Only valid when the response was set via SetResponseString(), or
+  // set_was_cached(true) was called.
+  int64_t GetTotalReceivedBytes() const override;
   void Start() override;
 
   // URL we were created with. Because of how we're using URLFetcher GetURL()
@@ -181,6 +189,7 @@ class TestURLFetcher : public URLFetcher {
   }
   void set_cookies(const ResponseCookies& c) { fake_cookies_ = c; }
   void set_was_fetched_via_proxy(bool flag);
+  void set_was_cached(bool flag);
   void set_response_headers(scoped_refptr<HttpResponseHeaders> headers);
   void set_backoff_delay(base::TimeDelta backoff_delay);
   void SetDelegateForTests(DelegateForTests* delegate_for_tests);
@@ -221,6 +230,8 @@ class TestURLFetcher : public URLFetcher {
   std::string fake_response_string_;
   base::FilePath fake_response_file_path_;
   bool fake_was_fetched_via_proxy_;
+  bool fake_was_cached_;
+  int64 fake_response_bytes_;
   scoped_refptr<HttpResponseHeaders> fake_response_headers_;
   HttpRequestHeaders fake_extra_request_headers_;
   int fake_max_retries_;
@@ -242,10 +253,10 @@ class TestURLFetcherFactory : public URLFetcherFactory,
   TestURLFetcherFactory();
   ~TestURLFetcherFactory() override;
 
-  URLFetcher* CreateURLFetcher(int id,
-                               const GURL& url,
-                               URLFetcher::RequestType request_type,
-                               URLFetcherDelegate* d) override;
+  scoped_ptr<URLFetcher> CreateURLFetcher(int id,
+                                          const GURL& url,
+                                          URLFetcher::RequestType request_type,
+                                          URLFetcherDelegate* d) override;
   TestURLFetcher* GetFetcherByID(int id) const;
   void RemoveFetcherFromMap(int id);
   void SetDelegateForTests(TestURLFetcherDelegateForTests* delegate_for_tests);
@@ -308,6 +319,7 @@ class FakeURLFetcher : public TestURLFetcher {
   // constructor.
   void RunDelegate();
 
+  int64_t response_bytes_;
   base::WeakPtrFactory<FakeURLFetcher> weak_factory_;
 
   DISALLOW_COPY_AND_ASSIGN(FakeURLFetcher);
@@ -401,10 +413,10 @@ class FakeURLFetcherFactory : public URLFetcherFactory,
   // NULL.
   // Otherwise, it will return a URLFetcher object which will respond with the
   // pre-baked response that the client has set by calling SetFakeResponse().
-  URLFetcher* CreateURLFetcher(int id,
-                               const GURL& url,
-                               URLFetcher::RequestType request_type,
-                               URLFetcherDelegate* d) override;
+  scoped_ptr<URLFetcher> CreateURLFetcher(int id,
+                                          const GURL& url,
+                                          URLFetcher::RequestType request_type,
+                                          URLFetcherDelegate* d) override;
 
   // Sets the fake response for a given URL. The |response_data| may be empty.
   // The |response_code| may be any HttpStatusCode. For instance, HTTP_OK will
@@ -453,10 +465,10 @@ class URLFetcherImplFactory : public URLFetcherFactory {
   ~URLFetcherImplFactory() override;
 
   // This method will create a real URLFetcher.
-  URLFetcher* CreateURLFetcher(int id,
-                               const GURL& url,
-                               URLFetcher::RequestType request_type,
-                               URLFetcherDelegate* d) override;
+  scoped_ptr<URLFetcher> CreateURLFetcher(int id,
+                                          const GURL& url,
+                                          URLFetcher::RequestType request_type,
+                                          URLFetcherDelegate* d) override;
 };
 
 }  // namespace net

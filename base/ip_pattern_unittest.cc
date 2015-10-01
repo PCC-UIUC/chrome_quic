@@ -4,6 +4,7 @@
 
 #include "net/base/ip_pattern.h"
 
+#include "net/base/ip_address_number.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace net {
@@ -15,7 +16,7 @@ bool IsValidPattern(const std::string& pattern_text) {
   return pattern.ParsePattern(pattern_text);
 }
 
-bool CheckForMatch(const IPPattern& pattern, std::string address_text) {
+bool CheckForMatch(const IPPattern& pattern, const std::string& address_text) {
   IPAddressNumber address;
   EXPECT_TRUE(ParseIPLiteralToNumber(address_text, &address));
   return pattern.Match(address);

@@ -4,8 +4,11 @@
 
 #include <queue>
 
+#include "base/location.h"
 #include "base/memory/ref_counted.h"
 #include "base/message_loop/message_loop.h"
+#include "base/single_thread_task_runner.h"
+#include "base/thread_task_runner_handle.h"
 #include "base/time/clock.h"
 #include "base/time/default_clock.h"
 #include "base/timer/mock_timer.h"
@@ -409,7 +412,7 @@ class PtrRecordCopyContainer {
     ttl_ = value->ttl();
   }
 
-  bool IsRecordWith(std::string name, std::string ptrdomain) {
+  bool IsRecordWith(const std::string& name, const std::string& ptrdomain) {
     return set_ && name_ == name && ptrdomain_ == ptrdomain;
   }
 
@@ -524,7 +527,7 @@ void MDnsTest::DeleteBothListeners() {
 void MDnsTest::RunFor(base::TimeDelta time_period) {
   base::CancelableCallback<void()> callback(base::Bind(&MDnsTest::Stop,
                                                        base::Unretained(this)));
-  base::MessageLoop::current()->PostDelayedTask(
+  base::ThreadTaskRunnerHandle::Get()->PostDelayedTask(
       FROM_HERE, callback.callback(), time_period);
 
   base::MessageLoop::current()->Run();
